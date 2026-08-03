@@ -1,0 +1,6 @@
+/bin/
+/dist/
+*.csv
+*.ndjson
+.DS_Store
+
