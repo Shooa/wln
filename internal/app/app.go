@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.7.0"
+var Version = "0.7.1"
 
 var openBrowser = browseropen.Open
 
@@ -86,11 +86,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return printCommandHelp(stdout, commandHelpPath(rest[:i]))
 		}
 	}
-	if len(rest) == 1 {
-		switch rest[0] {
-		case "profile", "units", "messages", "api":
-			return printCommandHelp(stdout, rest)
-		}
+	if path := bareCommandHelpPath(rest); path != nil {
+		return printCommandHelp(stdout, path)
 	}
 	resolvedWidth := *tableWidth
 	if resolvedWidth == 0 && !*wide {
@@ -111,19 +108,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "api":
 		return runAPI(ctx, rest[1:], opts)
 	default:
-		return fmt.Errorf("unknown command %q", rest[0])
+		return commandError(opts, "", fmt.Sprintf("unknown command %q", rest[0]))
 	}
 }
 
 func runUpdate(ctx context.Context, args []string, opts options) error {
-	fs := flag.NewFlagSet("update", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("update", "update", opts)
 	checkOnly := fs.Bool("check", false, "check for a new release without installing it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return errors.New("usage: wln update [--check]")
+	if err := rejectUnexpectedArgs(fs, opts, "update"); err != nil {
+		return err
 	}
 	if *checkOnly {
 		info, err := selfupdate.Check(ctx, Version, true)
@@ -159,7 +155,7 @@ func printUsage(w io.Writer) {
 
 func runProfile(ctx context.Context, args []string, opts options) error {
 	if len(args) == 0 {
-		return errors.New("profile command is required: list, add, login, use, remove, or check")
+		return commandError(opts, "profile", "profile subcommand is required")
 	}
 	cfg, err := config.Load(opts.configPath)
 	if err != nil {
@@ -167,29 +163,33 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 	}
 	switch args[0] {
 	case "list":
-		fs := flag.NewFlagSet("profile list", flag.ContinueOnError)
-		fs.SetOutput(opts.stderr)
+		fs := newCommandFlagSet("profile list", "profile list", opts)
 		format := fs.String("format", "table", "table or json")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
+		if err := rejectUnexpectedArgs(fs, opts, "profile list"); err != nil {
+			return err
+		}
 		return printProfiles(cfg, *format, opts.stdout, opts.stdout, opts.tableWidth)
 	case "add":
-		if len(args) < 2 {
-			return errors.New("profile name is required")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return commandError(opts, "profile add", "profile NAME is required")
 		}
 		name := args[1]
 		if err := validateProfileName(name); err != nil {
 			return err
 		}
-		fs := flag.NewFlagSet("profile add", flag.ContinueOnError)
-		fs.SetOutput(opts.stderr)
+		fs := newCommandFlagSet("profile add", "profile add", opts)
 		server := fs.String("server", config.DefaultServer(), "Wialon server base URL")
 		operateAs := fs.String("operate-as", "", "optional subuser name")
 		tokenStdin := fs.Bool("token-stdin", false, "read token from standard input")
 		makeDefault := fs.Bool("default", false, "make this the default profile")
 		allowHTTP := fs.Bool("allow-http", false, "allow an unencrypted HTTP server (Wialon Local only)")
 		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if err := rejectUnexpectedArgs(fs, opts, "profile add"); err != nil {
 			return err
 		}
 		token, err := profileToken(*tokenStdin)
@@ -209,15 +209,14 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		fmt.Fprintf(opts.stdout, "Profile %q saved; token was not printed.\n", name)
 		return nil
 	case "login":
-		if len(args) < 2 {
-			return errors.New("profile name is required")
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return commandError(opts, "profile login", "profile NAME is required")
 		}
 		name := args[1]
 		if err := validateProfileName(name); err != nil {
 			return err
 		}
-		fs := flag.NewFlagSet("profile login", flag.ContinueOnError)
-		fs.SetOutput(opts.stderr)
+		fs := newCommandFlagSet("profile login", "profile login", opts)
 		server := fs.String("server", "", "base URL of the Wialon installation")
 		operateAs := fs.String("operate-as", "", "optional subuser name used by API sessions")
 		user := fs.String("user", "", "pre-fill the Wialon login name")
@@ -231,8 +230,11 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
+		if err := rejectUnexpectedArgs(fs, opts, "profile login"); err != nil {
+			return err
+		}
 		if *server == "" {
-			return errors.New("--server is required and must be the base URL of the Wialon installation")
+			return commandError(opts, "profile login", "--server is required and must be the base URL of the Wialon installation")
 		}
 		if err := validateServer(*server, *allowHTTP); err != nil {
 			return err
@@ -291,7 +293,7 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		return nil
 	case "use":
 		if len(args) != 2 {
-			return errors.New("usage: wln profile use NAME")
+			return commandError(opts, "profile use", "profile NAME is required")
 		}
 		if _, ok := cfg.Profiles[args[1]]; !ok {
 			return fmt.Errorf("profile %q not found", args[1])
@@ -304,7 +306,7 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		return nil
 	case "remove":
 		if len(args) != 2 {
-			return errors.New("usage: wln profile remove NAME")
+			return commandError(opts, "profile remove", "profile NAME is required")
 		}
 		if _, ok := cfg.Profiles[args[1]]; !ok {
 			return fmt.Errorf("profile %q not found", args[1])
@@ -323,14 +325,14 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		return nil
 	case "check":
 		if len(args) > 2 {
-			return errors.New("usage: wln profile check [NAME]")
+			return commandError(opts, "profile check", "profile check accepts at most one NAME")
 		}
 		if len(args) == 2 {
 			opts.profile = args[1]
 		}
 		return runDoctor(ctx, nil, opts)
 	default:
-		return fmt.Errorf("unknown profile command %q", args[0])
+		return commandError(opts, "profile", fmt.Sprintf("unknown profile subcommand %q", args[0]))
 	}
 }
 
@@ -411,7 +413,7 @@ func printProfiles(cfg *config.File, format string, out, notice io.Writer, table
 
 func runUnits(ctx context.Context, args []string, opts options) error {
 	if len(args) == 0 {
-		return errors.New("usage: wln units list|status")
+		return commandError(opts, "units", "units subcommand is required")
 	}
 	switch args[0] {
 	case "list":
@@ -419,16 +421,18 @@ func runUnits(ctx context.Context, args []string, opts options) error {
 	case "status":
 		return runUnitsStatus(ctx, args[1:], opts)
 	default:
-		return fmt.Errorf("unknown units command %q", args[0])
+		return commandError(opts, "units", fmt.Sprintf("unknown units subcommand %q", args[0]))
 	}
 }
 
 func runUnitsList(ctx context.Context, args []string, opts options) error {
-	fs := flag.NewFlagSet("units list", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("units list", "units list", opts)
 	search := fs.String("search", "*", "Wialon unit name mask")
 	format := fs.String("format", "table", "table, json, or csv")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units list"); err != nil {
 		return err
 	}
 	return withClient(ctx, opts, func(client *wialon.Client) error {
@@ -491,7 +495,7 @@ func printUnits(units []wialon.Unit, format string, out, notice io.Writer, table
 
 func runMessages(ctx context.Context, args []string, opts options) error {
 	if len(args) == 0 {
-		return errors.New("usage: wln messages get|tail|export UNIT [options]")
+		return commandError(opts, "messages", "messages subcommand is required")
 	}
 	switch args[0] {
 	case "get":
@@ -501,17 +505,16 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 	case "export":
 		return runMessagesExport(ctx, args[1:], opts)
 	default:
-		return fmt.Errorf("unknown messages command %q", args[0])
+		return commandError(opts, "messages", fmt.Sprintf("unknown messages subcommand %q", args[0]))
 	}
 }
 
 func runMessagesGet(ctx context.Context, args []string, opts options) error {
-	if len(args) < 2 {
-		return errors.New("usage: wln messages get UNIT [--from RFC3339] [--to RFC3339] [--output FILE]")
+	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		return commandError(opts, "messages get", "UNIT is required")
 	}
 	unitRef := args[1]
-	fs := flag.NewFlagSet("messages get", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("messages get", "messages get", opts)
 	fromText := fs.String("from", "", "interval start in RFC3339 with an explicit offset (default: today at 00:00 local time)")
 	toText := fs.String("to", "", "interval end in RFC3339 with an explicit offset (default: now)")
 	var last flexibleDuration
@@ -526,6 +529,9 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 	allTypes := fs.Bool("all-types", false, "include non-telemetry messages")
 	force := fs.Bool("force", false, "replace an existing output file")
 	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "messages get"); err != nil {
 		return err
 	}
 	from, to, err := resolveMessageInterval(*fromText, *toText, last.Duration, *today, *yesterday, *since, time.Now())
@@ -806,18 +812,23 @@ func resolveUnit(ctx context.Context, client *wialon.Client, ref string) (wialon
 }
 
 func runAPI(ctx context.Context, args []string, opts options) error {
-	if len(args) < 2 || args[0] != "call" {
-		return errors.New("usage: wln api call SERVICE [--params JSON|@FILE]")
+	if len(args) == 0 || args[0] != "call" {
+		return commandError(opts, "api", "api subcommand must be 'call'")
+	}
+	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		return commandError(opts, "api call", "SERVICE is required")
 	}
 	service := args[1]
 	if strings.HasPrefix(service, "token/") || service == "core/logout" || service == "core/create_auth_hash" {
 		return fmt.Errorf("service %q is blocked because it can expose credentials or is managed internally by wln", service)
 	}
-	fs := flag.NewFlagSet("api call", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("api call", "api call", opts)
 	paramsText := fs.String("params", "{}", "JSON object/array or @file")
 	compact := fs.Bool("compact", false, "emit compact JSON")
 	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "api call"); err != nil {
 		return err
 	}
 	data := []byte(*paramsText)

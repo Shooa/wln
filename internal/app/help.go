@@ -1,6 +1,7 @@
 package app
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -18,6 +19,36 @@ func commandHelpPath(args []string) []string {
 		}
 	}
 	return args[:depth]
+}
+
+func bareCommandHelpPath(args []string) []string {
+	switch strings.Join(args, " ") {
+	case "profile", "units", "messages", "api",
+		"profile login", "profile add", "profile use", "profile remove",
+		"messages get", "messages tail", "messages export", "api call":
+		return args
+	default:
+		return nil
+	}
+}
+
+func newCommandFlagSet(name, helpKey string, opts options) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(opts.stderr)
+	fs.Usage = func() { _ = printCommandHelp(opts.stderr, strings.Fields(helpKey)) }
+	return fs
+}
+
+func commandError(opts options, helpKey, message string) error {
+	_ = printCommandHelp(opts.stderr, strings.Fields(helpKey))
+	return fmt.Errorf("%s", message)
+}
+
+func rejectUnexpectedArgs(fs *flag.FlagSet, opts options, helpKey string) error {
+	if fs.NArg() == 0 {
+		return nil
+	}
+	return commandError(opts, helpKey, fmt.Sprintf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 }
 
 func printCommandHelp(w io.Writer, path []string) error {
@@ -312,6 +343,10 @@ Run 'wln help api call' for details.`,
 
 USAGE
   wln api call SERVICE [--params JSON|@FILE] [--compact]
+
+OPTIONS
+  --params VALUE  JSON object/array or @FILE (default: {})
+  --compact       Emit compact JSON instead of indented JSON
 
 EXAMPLES
   wln api call user/get_locale --params '{}'

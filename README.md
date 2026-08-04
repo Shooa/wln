@@ -66,7 +66,9 @@ wln help --all
 
 Running a command group without a subcommand shows that level directly, so
 `wln profile`, `wln units`, `wln messages`, and `wln api` are also valid help
-entry points.
+entry points. A leaf command that cannot run without a positional argument also
+shows its complete help when invoked bare; for example, `wln messages get`
+includes every interval shortcut instead of returning a shortened usage line.
 
 `wln help --all` is intended for shell agents and LLMs that have only the
 binary: it includes every command, argument, default, constraint, and example

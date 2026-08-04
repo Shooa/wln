@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -68,8 +67,7 @@ func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		unitRef, args = args[0], args[1:]
 	}
-	fs := flag.NewFlagSet("units status", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("units status", "units status", opts)
 	search := fs.String("search", "*", "Wialon unit name mask")
 	offline := fs.Bool("offline", false, "show only disconnected units")
 	var stale flexibleDuration
@@ -80,6 +78,9 @@ func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 	limit := fs.Int("limit", 0, "maximum rows; 0 means all")
 	format := fs.String("format", "table", "table, json, or csv")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units status"); err != nil {
 		return err
 	}
 	if stale.Duration < 0 || inactive.Duration < 0 || *limit < 0 {
@@ -231,12 +232,11 @@ func formatAge(duration time.Duration) string {
 }
 
 func runMessagesTail(ctx context.Context, args []string, opts options) error {
-	if len(args) == 0 {
-		return errors.New("usage: wln messages tail UNIT [-n COUNT] [--follow]")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "messages tail", "UNIT is required")
 	}
 	unitRef, args := args[0], args[1:]
-	fs := flag.NewFlagSet("messages tail", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("messages tail", "messages tail", opts)
 	count := fs.Int("n", 20, "number of latest messages")
 	follow := fs.Bool("follow", false, "poll for new messages until interrupted")
 	poll := fs.Duration("poll", 2*time.Second, "poll interval for --follow")
@@ -245,6 +245,9 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	maxParams := fs.Int("max-params", 100, "maximum parameter characters in table output")
 	fullParams := fs.Bool("full-params", false, "show complete parameters in table output")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "messages tail"); err != nil {
 		return err
 	}
 	if *count < 1 || *count > 10000 {
@@ -404,12 +407,11 @@ func numberText(value any) string {
 }
 
 func runMessagesExport(ctx context.Context, args []string, opts options) error {
-	if len(args) == 0 {
-		return errors.New("usage: wln messages export UNIT [interval] --format kml|plt|wln|wlb")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "messages export", "UNIT is required")
 	}
 	unitRef, args := args[0], args[1:]
-	fs := flag.NewFlagSet("messages export", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("messages export", "messages export", opts)
 	fromText := fs.String("from", "", "interval start in RFC3339")
 	toText := fs.String("to", "", "interval end in RFC3339")
 	var last flexibleDuration
@@ -422,6 +424,9 @@ func runMessagesExport(ctx context.Context, args []string, opts options) error {
 	output := fs.String("output", "", "output file path; - writes to stdout")
 	force := fs.Bool("force", false, "replace an existing output file")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "messages export"); err != nil {
 		return err
 	}
 	allowed := map[string]bool{"kml": true, "plt": true, "wln": true, "wlb": true}
@@ -512,10 +517,12 @@ func writeAtomic(path string, data []byte, force bool) error {
 }
 
 func runDoctor(ctx context.Context, args []string, opts options) error {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
+	fs := newCommandFlagSet("doctor", "doctor", opts)
 	format := fs.String("format", "table", "table or json")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "doctor"); err != nil {
 		return err
 	}
 	cfg, err := config.Load(opts.configPath)
