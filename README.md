@@ -252,9 +252,8 @@ directory:
 wln messages get 1001
 ```
 
-Before loading messages, `wln` prints a copyable multiline command containing
-the resolved interval and output path. Use the explicit form to adjust either
-boundary:
+Before loading messages, `wln` reports the resolved unit and interval. Use the
+explicit form to set either boundary:
 
 ```sh
 wln messages get 1001 \

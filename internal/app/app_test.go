@@ -83,13 +83,15 @@ func TestMessagesGetEndToEndWithPagination(t *testing.T) {
 		t.Fatal("token leaked to command output")
 	}
 	for _, expected := range []string{
-		"Repeat command:",
-		"--from '2026-07-19T11:00:00+05:00'",
-		"--to '2026-07-19T12:00:00+05:00'",
+		"Unit: Test unit (id=1001, unique_id=123456789012345)",
+		"Interval: 2026-07-19T11:00:00+05:00 — 2026-07-19T12:00:00+05:00",
 	} {
 		if !strings.Contains(stderr.String(), expected) {
 			t.Errorf("stderr missing %q:\n%s", expected, stderr.String())
 		}
+	}
+	if strings.Contains(stderr.String(), "Repeat command:") || strings.Contains(stderr.String(), "wln messages get") {
+		t.Fatalf("stderr contains a synthesized command:\n%s", stderr.String())
 	}
 	f, err := os.Open(output)
 	if err != nil {

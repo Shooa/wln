@@ -263,9 +263,7 @@ DEFAULT
 EXAMPLES
   wln messages get 1001
   wln messages get 1001 --last 2h --format ndjson --output -
-  wln messages get 1001 --yesterday --params temperature,voltage
-
-The resolved RFC3339 command is printed to stderr before export.`,
+  wln messages get 1001 --yesterday --params temperature,voltage`,
 
 	"messages tail": `wln messages tail — print recent messages
 

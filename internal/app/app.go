@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.7.1"
+var Version = "0.7.2"
 
 var openBrowser = browseropen.Open
 
@@ -567,7 +567,6 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 		}
 		fmt.Fprintf(opts.stderr, "Unit: %s (id=%d, unique_id=%s)\n", unit.Name, unit.ID, unit.UniqueID)
 		fmt.Fprintf(opts.stderr, "Interval: %s — %s\n", from.Format(time.RFC3339), to.Format(time.RFC3339))
-		printMessagesCommand(opts.stderr, unitRef, from, to, outputPath, *format, *paramsFilter, *batchSize, *allTypes, *force)
 
 		spool, err := exportcsv.NewSpool()
 		if err != nil {
@@ -729,26 +728,6 @@ func safeFilenamePart(value string) string {
 	return result.String()
 }
 
-func printMessagesCommand(w io.Writer, unitRef string, from, to time.Time, output, format, params string, batchSize int, allTypes, force bool) {
-	fmt.Fprintln(w, "Repeat command:")
-	fmt.Fprintf(w, "  wln messages get %s \\\n", shellQuote(unitRef))
-	fmt.Fprintf(w, "    --from %s \\\n", shellQuote(from.Format(time.RFC3339)))
-	fmt.Fprintf(w, "    --to %s \\\n", shellQuote(to.Format(time.RFC3339)))
-	fmt.Fprintf(w, "    --batch-size %d \\\n", batchSize)
-	fmt.Fprintf(w, "    --format %s \\\n", shellQuote(format))
-	if params != "" {
-		fmt.Fprintf(w, "    --params %s \\\n", shellQuote(params))
-	}
-	fmt.Fprintf(w, "    --output %s", shellQuote(output))
-	if allTypes {
-		fmt.Fprint(w, " \\\n    --all-types")
-	}
-	if force {
-		fmt.Fprint(w, " \\\n    --force")
-	}
-	fmt.Fprintln(w)
-}
-
 func filterMessageParams(message map[string]any, filter string) map[string]any {
 	if strings.TrimSpace(filter) == "" {
 		return message
@@ -774,10 +753,6 @@ func filterMessageParams(message map[string]any, filter string) map[string]any {
 		copyMessage["p"] = selected
 	}
 	return copyMessage
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func parseTime(value string) (time.Time, error) {
