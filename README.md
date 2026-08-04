@@ -64,6 +64,10 @@ wln messages get --help
 wln help --all
 ```
 
+Running a command group without a subcommand shows that level directly, so
+`wln profile`, `wln units`, `wln messages`, and `wln api` are also valid help
+entry points.
+
 `wln help --all` is intended for shell agents and LLMs that have only the
 binary: it includes every command, argument, default, constraint, and example
 in one output.

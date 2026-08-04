@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.6.0"
+var Version = "0.6.1"
 
 var openBrowser = browseropen.Open
 
@@ -38,6 +38,9 @@ type options struct {
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return printCommandHelp(stdout, nil)
+	}
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 		return printCommandHelp(stdout, nil)
 	}
@@ -67,8 +70,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
-		printUsage(stderr)
-		return errors.New("command is required")
+		return printCommandHelp(stdout, nil)
 	}
 	if rest[0] == "help" {
 		return printCommandHelp(stdout, rest[1:])
@@ -76,6 +78,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	for i, arg := range rest {
 		if arg == "-h" || arg == "--help" {
 			return printCommandHelp(stdout, commandHelpPath(rest[:i]))
+		}
+	}
+	if len(rest) == 1 {
+		switch rest[0] {
+		case "profile", "units", "messages", "api":
+			return printCommandHelp(stdout, rest)
 		}
 	}
 	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, stdout: stdout, stderr: stderr}

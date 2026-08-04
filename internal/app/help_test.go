@@ -14,8 +14,13 @@ func TestHierarchicalHelp(t *testing.T) {
 		want []string
 	}{
 		{name: "root", args: []string{"help"}, want: []string{"COMMANDS", "wln help --all"}},
+		{name: "bare root", args: nil, want: []string{"COMMANDS", "wln help --all"}},
 		{name: "root flag", args: []string{"--help"}, want: []string{"COMMANDS", "GLOBAL OPTIONS"}},
 		{name: "group", args: []string{"help", "units"}, want: []string{"SUBCOMMANDS", "status  Show connectivity"}},
+		{name: "bare profile group", args: []string{"profile"}, want: []string{"wln profile", "login NAME", "check [NAME]"}},
+		{name: "bare units group", args: []string{"units"}, want: []string{"wln units", "SUBCOMMANDS"}},
+		{name: "bare messages group", args: []string{"messages"}, want: []string{"wln messages", "tail"}},
+		{name: "bare api group", args: []string{"api"}, want: []string{"wln api", "call SERVICE"}},
 		{name: "leaf", args: []string{"help", "units", "status"}, want: []string{"--inactive", "selecting an unused unit"}},
 		{name: "inline leaf", args: []string{"messages", "get", "--help"}, want: []string{"--last DURATION", "default is local midnight"}},
 		{name: "inline after argument", args: []string{"messages", "get", "1001", "--help"}, want: []string{"wln messages get UNIT", "--yesterday"}},
