@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.6.1"
+var Version = "0.7.0"
 
 var openBrowser = browseropen.Open
 
@@ -33,6 +33,7 @@ type options struct {
 	configPath string
 	profile    string
 	timeout    time.Duration
+	tableWidth int
 	stdout     io.Writer
 	stderr     io.Writer
 }
@@ -56,6 +57,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	configPath := global.String("config", defaultConfig, "configuration file")
 	profile := global.String("profile", "", "profile name (default: configured default)")
 	timeout := global.Duration("timeout", 2*time.Minute, "HTTP request timeout")
+	tableWidth := global.Int("width", 0, "table width; 0 detects the terminal")
+	wide := global.Bool("wide", false, "do not fit tables to the terminal width")
 	version := global.Bool("version", false, "print version")
 	global.Usage = func() { printUsage(stderr) }
 	if err := global.Parse(args); err != nil {
@@ -67,6 +70,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if *version {
 		fmt.Fprintf(stdout, "wln %s\n", Version)
 		return nil
+	}
+	if *tableWidth < 0 {
+		return errors.New("--width must not be negative")
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
@@ -86,7 +92,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return printCommandHelp(stdout, rest)
 		}
 	}
-	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, stdout: stdout, stderr: stderr}
+	resolvedWidth := *tableWidth
+	if resolvedWidth == 0 && !*wide {
+		resolvedWidth = texttable.TerminalWidth(stdout)
+	}
+	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, tableWidth: resolvedWidth, stdout: stdout, stderr: stderr}
 	switch rest[0] {
 	case "profile":
 		return runProfile(ctx, rest[1:], opts)
@@ -163,7 +173,7 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return printProfiles(cfg, *format, opts.stdout)
+		return printProfiles(cfg, *format, opts.stdout, opts.stdout, opts.tableWidth)
 	case "add":
 		if len(args) < 2 {
 			return errors.New("profile name is required")
@@ -366,7 +376,7 @@ func validateServer(server string, allowHTTP bool) error {
 	return nil
 }
 
-func printProfiles(cfg *config.File, format string, out io.Writer) error {
+func printProfiles(cfg *config.File, format string, out, notice io.Writer, tableWidth int) error {
 	type publicProfile struct {
 		Name      string `json:"name"`
 		Default   bool   `json:"default"`
@@ -388,7 +398,12 @@ func printProfiles(cfg *config.File, format string, out io.Writer) error {
 		for _, p := range profiles {
 			rows = append(rows, []string{p.Name, strconv.FormatBool(p.Default), p.Server, p.OperateAs})
 		}
-		return texttable.Write(out, []string{"NAME", "DEFAULT", "SERVER", "OPERATE AS"}, rows)
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "NAME", MinWidth: 10},
+			{Header: "DEFAULT", MinWidth: 7},
+			{Header: "SERVER", MinWidth: 20},
+			{Header: "OPERATE AS", MinWidth: 10, HidePriority: 1, HideIfEmpty: true},
+		}, rows, tableWidth)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
@@ -436,11 +451,11 @@ func runUnitsList(ctx context.Context, args []string, opts options) error {
 				units[i].Hardware = fmt.Sprintf("Unknown (#%d)", units[i].HardwareID)
 			}
 		}
-		return printUnits(units, *format, opts.stdout)
+		return printUnits(units, *format, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
-func printUnits(units []wialon.Unit, format string, out io.Writer) error {
+func printUnits(units []wialon.Unit, format string, out, notice io.Writer, tableWidth int) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(out)
@@ -463,7 +478,12 @@ func printUnits(units []wialon.Unit, format string, out io.Writer) error {
 		for _, unit := range units {
 			rows = append(rows, []string{strconv.FormatInt(unit.ID, 10), unit.Name, unit.UniqueID, unit.Hardware})
 		}
-		return texttable.Write(out, []string{"ID", "NAME", "UNIQUE ID", "HARDWARE"}, rows)
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "ID", MinWidth: 8, HidePriority: 1},
+			{Header: "NAME", MinWidth: 12},
+			{Header: "UNIQUE ID", MinWidth: 15},
+			{Header: "HARDWARE", MinWidth: 10, HidePriority: 2},
+		}, rows, tableWidth)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}

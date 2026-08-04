@@ -66,6 +66,8 @@ GLOBAL OPTIONS
   --profile NAME      Override the configured default profile
   --config PATH       Override the configuration file
   --timeout DURATION  HTTP timeout (default: 2m)
+  --width N           Override detected terminal width for tables
+  --wide              Do not fit tables to the terminal width
   --version           Print the wln version
 
 HELP

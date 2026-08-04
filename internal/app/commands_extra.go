@@ -139,11 +139,11 @@ func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 		if *limit > 0 && len(filtered) > *limit {
 			filtered = filtered[:*limit]
 		}
-		return printUnitStatuses(filtered, *format, now, opts.stdout)
+		return printUnitStatuses(filtered, *format, now, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
-func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Time, out io.Writer) error {
+func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Time, out, notice io.Writer, tableWidth int) error {
 	for i := range statuses {
 		if statuses[i].Position.Time != 0 {
 			age := now.Sub(time.Unix(statuses[i].Position.Time, 0))
@@ -164,9 +164,11 @@ func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Tim
 			pointTime := time.Unix(status.Position.Time, 0).In(now.Location())
 			lastPoint, pointAge = pointTime.Format(time.RFC3339), formatAge(now.Sub(pointTime))
 		}
-		lastMessage := "never"
+		lastMessage, messageAge := "never", "never"
 		if status.LastMessageTime != 0 {
-			lastMessage = time.Unix(status.LastMessageTime, 0).In(now.Location()).Format(time.RFC3339)
+			messageTime := time.Unix(status.LastMessageTime, 0).In(now.Location())
+			lastMessage = messageTime.Format(time.RFC3339)
+			messageAge = formatAge(now.Sub(messageTime))
 		}
 		state := "offline"
 		if status.Online {
@@ -176,10 +178,20 @@ func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Tim
 		if status.Position.Time != 0 {
 			position = fmt.Sprintf("%.6f,%.6f", status.Position.Latitude, status.Position.Longitude)
 		}
-		rows = append(rows, []string{strconv.FormatInt(status.ID, 10), status.Name, status.UniqueID, state, lastPoint, pointAge, lastMessage, position})
+		rows = append(rows, []string{strconv.FormatInt(status.ID, 10), status.Name, status.UniqueID, state, lastPoint, pointAge, lastMessage, messageAge, position})
 	}
 	if format == "table" {
-		return texttable.Write(out, []string{"ID", "NAME", "UNIQUE ID", "STATUS", "LAST POINT", "POINT AGE", "LAST MESSAGE", "POSITION"}, rows)
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "ID", MinWidth: 8, HidePriority: 2},
+			{Header: "NAME", MinWidth: 11},
+			{Header: "UNIQUE ID", MinWidth: 15},
+			{Header: "STATUS", MinWidth: 7},
+			{Header: "LAST POINT", MinWidth: 16, HidePriority: 3},
+			{Header: "POINT AGE", MinWidth: 8},
+			{Header: "LAST MESSAGE", MinWidth: 16, HidePriority: 4},
+			{Header: "MSG AGE", MinWidth: 7},
+			{Header: "POSITION", MinWidth: 19, HidePriority: 1, HideIfEmpty: true},
+		}, rows, tableWidth)
 	}
 	if format == "csv" {
 		w := csv.NewWriter(out)
@@ -187,7 +199,8 @@ func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Tim
 			return err
 		}
 		for _, row := range rows {
-			if err := w.Write(row); err != nil {
+			csvRow := append(append([]string(nil), row[:7]...), row[8])
+			if err := w.Write(csvRow); err != nil {
 				return err
 			}
 		}
@@ -273,7 +286,7 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 				if *fullParams {
 					limit = 0
 				}
-				return printTailMessages(fresh, *format, limit, opts.stdout)
+				return printTailMessages(fresh, *format, limit, opts.stdout, opts.stdout, opts.tableWidth)
 			}
 			return nil
 		}
@@ -299,7 +312,7 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	})
 }
 
-func printTailMessages(messages []map[string]any, format string, maxParams int, out io.Writer) error {
+func printTailMessages(messages []map[string]any, format string, maxParams int, out, notice io.Writer, tableWidth int) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(out)
@@ -334,7 +347,14 @@ func printTailMessages(messages []map[string]any, format string, maxParams int, 
 			}
 			rows = append(rows, []string{formatted, fmt.Sprint(message["tp"]), lat, lon, speed, params})
 		}
-		return texttable.Write(out, []string{"TIME", "TYPE", "LAT", "LON", "SPEED", "PARAMETERS"}, rows)
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "TIME", MinWidth: 16},
+			{Header: "TYPE", MinWidth: 4},
+			{Header: "LAT", MinWidth: 8, HidePriority: 2, HideIfEmpty: true},
+			{Header: "LON", MinWidth: 8, HidePriority: 2, HideIfEmpty: true},
+			{Header: "SPEED", MinWidth: 5, HidePriority: 1, HideIfEmpty: true},
+			{Header: "PARAMETERS", MinWidth: 20},
+		}, rows, tableWidth)
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
@@ -514,7 +534,7 @@ func runDoctor(ctx context.Context, args []string, opts options) error {
 	started := time.Now()
 	if err := client.Login(ctx, profile.Token, profile.OperateAs); err != nil {
 		checks = append(checks, doctorCheck{"login", "FAIL", err.Error()})
-		_ = printChecks(checks, *format, opts.stdout)
+		_ = printChecks(checks, *format, opts.stdout, opts.stdout, opts.tableWidth)
 		return err
 	}
 	defer client.Logout(context.WithoutCancel(ctx))
@@ -533,10 +553,10 @@ func runDoctor(ctx context.Context, args []string, opts options) error {
 	} else {
 		checks = append(checks, doctorCheck{"units", "OK", fmt.Sprintf("%d accessible", len(units))})
 	}
-	return printChecks(checks, *format, opts.stdout)
+	return printChecks(checks, *format, opts.stdout, opts.stdout, opts.tableWidth)
 }
 
-func printChecks(checks []doctorCheck, format string, out io.Writer) error {
+func printChecks(checks []doctorCheck, format string, out, notice io.Writer, tableWidth int) error {
 	if format == "json" {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -549,5 +569,9 @@ func printChecks(checks []doctorCheck, format string, out io.Writer) error {
 	for _, c := range checks {
 		rows = append(rows, []string{c.Check, c.Status, c.Details})
 	}
-	return texttable.Write(out, []string{"CHECK", "STATUS", "DETAILS"}, rows)
+	return texttable.WriteAdaptive(out, notice, []texttable.Column{
+		{Header: "CHECK", MinWidth: 8},
+		{Header: "STATUS", MinWidth: 6},
+		{Header: "DETAILS", MinWidth: 20},
+	}, rows, tableWidth)
 }

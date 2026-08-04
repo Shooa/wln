@@ -4,8 +4,8 @@
 or Wialon Local to analysis-ready CSV. It also provides profile management,
 unit discovery, and authenticated access to arbitrary Remote API services.
 
-The implementation uses only the Go standard library. It talks to Wialon only
-through the documented Remote API and never prints access tokens or session IDs.
+The implementation is written in Go and talks to Wialon only through the
+documented Remote API. It never prints access tokens or session IDs.
 
 ## Install
 
@@ -218,6 +218,20 @@ last arbitrary message timestamp, so the two are shown separately. For reuse
 candidates, `--inactive` is safer: it requires both the last position and the
 last message to be older than the threshold.
 
+Tables detect the current terminal width and fit before printing: optional
+columns are removed by command-specific priority and long values receive an
+ellipsis instead of being wrapped by the terminal. `units status` always keeps
+the name, unique ID, connection state, point age, and message age. A compact
+notice lists hidden columns. Use global `--wide` to disable fitting or
+`--width N` to reproduce a specific layout:
+
+```sh
+wln --width 106 units status
+wln --wide units status
+```
+
+CSV, JSON, NDJSON, and redirected table output remain unabridged.
+
 ```text
 The table also includes the current unique ID, making the selected unit
 unambiguous before its connectivity settings are changed.
@@ -352,6 +366,8 @@ are redacted. `token/login` and `core/logout` are managed internally.
 --profile NAME
 --config PATH
 --timeout 2m
+--width N
+--wide
 --version
 ```
 

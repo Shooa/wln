@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Shooa/wln/internal/config"
 )
@@ -45,7 +46,7 @@ func TestUnitsStatusSortsNeverAndStalePointsFirst(t *testing.T) {
 	}))
 	defer server.Close()
 	var stdout, stderr bytes.Buffer
-	err := Run(context.Background(), []string{"--config", testProfile(t, server.URL), "units", "status", "--offline", "--stale", "24h", "--inactive", "24h"}, &stdout, &stderr)
+	err := Run(context.Background(), []string{"--width", "106", "--config", testProfile(t, server.URL), "units", "status", "--offline", "--stale", "24h", "--inactive", "24h"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("Run: %v\n%s", err, stderr.String())
 	}
@@ -59,9 +60,14 @@ func TestUnitsStatusSortsNeverAndStalePointsFirst(t *testing.T) {
 	if strings.Index(text, "Never") > strings.Index(text, "Stale") {
 		t.Fatalf("never should sort first:\n%s", text)
 	}
-	for _, value := range []string{"LAST POINT", "POINT AGE", "LAST MESSAGE", "never"} {
+	for _, value := range []string{"LAST POINT", "POINT AGE", "LAST MESSAGE", "MSG AGE", "never"} {
 		if !strings.Contains(text, value) {
 			t.Errorf("missing %q", value)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		if strings.Contains("┌├└│", string([]rune(line)[0])) && utf8.RuneCountInString(line) > 106 {
+			t.Errorf("table line exceeds requested width: %q", line)
 		}
 	}
 }
