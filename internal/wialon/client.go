@@ -15,7 +15,7 @@ import (
 
 const maxResponseBytes = 512 << 20
 
-var Version = "0.5.0"
+var Version = "0.5.1"
 
 type Client struct {
 	endpoint string

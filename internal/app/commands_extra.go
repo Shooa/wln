@@ -229,6 +229,8 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	poll := fs.Duration("poll", 2*time.Second, "poll interval for --follow")
 	format := fs.String("format", "table", "table, json, or ndjson")
 	allTypes := fs.Bool("all-types", false, "include non-telemetry messages")
+	maxParams := fs.Int("max-params", 100, "maximum parameter characters in table output")
+	fullParams := fs.Bool("full-params", false, "show complete parameters in table output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -237,6 +239,9 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	}
 	if *poll < 500*time.Millisecond {
 		return errors.New("--poll must be at least 500ms")
+	}
+	if *maxParams < 10 {
+		return errors.New("--max-params must be at least 10")
 	}
 	if *follow && *format == "json" {
 		return errors.New("--follow supports table or ndjson, not a finite JSON array")
@@ -264,7 +269,11 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 				}
 			}
 			if len(fresh) > 0 {
-				return printTailMessages(fresh, *format, opts.stdout)
+				limit := *maxParams
+				if *fullParams {
+					limit = 0
+				}
+				return printTailMessages(fresh, *format, limit, opts.stdout)
 			}
 			return nil
 		}
@@ -290,7 +299,7 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	})
 }
 
-func printTailMessages(messages []map[string]any, format string, out io.Writer) error {
+func printTailMessages(messages []map[string]any, format string, maxParams int, out io.Writer) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(out)
@@ -321,7 +330,7 @@ func printTailMessages(messages []map[string]any, format string, out io.Writer) 
 			params := ""
 			if p, ok := message["p"]; ok {
 				data, _ := json.Marshal(p)
-				params = string(data)
+				params = truncateRunes(string(data), maxParams)
 			}
 			rows = append(rows, []string{formatted, fmt.Sprint(message["tp"]), lat, lon, speed, params})
 		}
@@ -329,6 +338,20 @@ func printTailMessages(messages []map[string]any, format string, out io.Writer) 
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	if limit == 1 {
+		return "…"
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func int64Value(value any) int64 {
@@ -362,7 +385,7 @@ func numberText(value any) string {
 
 func runMessagesExport(ctx context.Context, args []string, opts options) error {
 	if len(args) == 0 {
-		return errors.New("usage: wln messages export UNIT [interval] --format txt|kml|plt|wln|wlb")
+		return errors.New("usage: wln messages export UNIT [interval] --format kml|plt|wln|wlb")
 	}
 	unitRef, args := args[0], args[1:]
 	fs := flag.NewFlagSet("messages export", flag.ContinueOnError)
@@ -374,14 +397,14 @@ func runMessagesExport(ctx context.Context, args []string, opts options) error {
 	today := fs.Bool("today", false, "today through now")
 	yesterday := fs.Bool("yesterday", false, "previous local calendar day")
 	since := fs.String("since", "", "interval start as RFC3339 or local HH:MM")
-	format := fs.String("format", "wln", "txt, kml, plt, wln, or wlb")
+	format := fs.String("format", "wln", "kml, plt, wln, or wlb")
 	compress := fs.Bool("compress", false, "request a compressed archive")
 	output := fs.String("output", "", "output file path; - writes to stdout")
 	force := fs.Bool("force", false, "replace an existing output file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	allowed := map[string]bool{"txt": true, "kml": true, "plt": true, "wln": true, "wlb": true}
+	allowed := map[string]bool{"kml": true, "plt": true, "wln": true, "wlb": true}
 	*format = strings.ToLower(*format)
 	if !allowed[*format] {
 		return fmt.Errorf("unsupported native format %q", *format)

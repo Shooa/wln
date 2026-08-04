@@ -144,12 +144,28 @@ func TestNativeMessageExport(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	configPath := testProfile(t, server.URL)
 	var out, errOut bytes.Buffer
-	err := Run(context.Background(), []string{"--config", testProfile(t, server.URL), "messages", "export", "1", "--last", "1h", "--format", "wln", "--output", "-"}, &out, &errOut)
+	err := Run(context.Background(), []string{"--config", configPath, "messages", "export", "1", "--last", "1h", "--format", "wln", "--output", "-"}, &out, &errOut)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "native-data" {
 		t.Fatalf("download = %q", out.String())
+	}
+	if err := Run(context.Background(), []string{"--config", configPath, "messages", "export", "1", "--format", "txt"}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "unsupported native format") {
+		t.Fatalf("txt error = %v", err)
+	}
+}
+
+func TestTruncateRunes(t *testing.T) {
+	if got, want := truncateRunes("1234567890", 6), "12345…"; got != want {
+		t.Fatalf("truncate = %q, want %q", got, want)
+	}
+	if got := truncateRunes("коротко", 20); got != "коротко" {
+		t.Fatalf("short value changed: %q", got)
+	}
+	if got := truncateRunes("complete", 0); got != "complete" {
+		t.Fatalf("unlimited = %q", got)
 	}
 }

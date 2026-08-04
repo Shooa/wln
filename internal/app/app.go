@@ -24,7 +24,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.5.0"
+var Version = "0.5.1"
 
 var openBrowser = browseropen.Open
 
@@ -37,6 +37,12 @@ type options struct {
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		return printCommandHelp(stdout, nil)
+	}
+	if len(args) > 0 && args[0] == "help" {
+		return printCommandHelp(stdout, args[1:])
+	}
 	defaultConfig, err := config.DefaultPath()
 	if err != nil {
 		return err
@@ -49,6 +55,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	version := global.Bool("version", false, "print version")
 	global.Usage = func() { printUsage(stderr) }
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if *version {
@@ -60,11 +69,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return errors.New("command is required")
 	}
+	if rest[0] == "help" {
+		return printCommandHelp(stdout, rest[1:])
+	}
+	for i, arg := range rest {
+		if arg == "-h" || arg == "--help" {
+			return printCommandHelp(stdout, commandHelpPath(rest[:i]))
+		}
+	}
 	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, stdout: stdout, stderr: stderr}
 	switch rest[0] {
-	case "help", "-h", "--help":
-		printUsage(stdout)
-		return nil
 	case "profile":
 		return runProfile(ctx, rest[1:], opts)
 	case "units":
@@ -81,30 +95,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, `wln — deterministic Wialon Hosting message export
-
-Usage:
-  wln [global options] profile list
-  wln [global options] profile add NAME [options]
-  wln [global options] profile login NAME --server BASE_URL
-  wln [global options] profile use NAME
-  wln [global options] profile remove NAME
-  wln [global options] profile check [NAME]
-  wln [global options] units list [--search MASK] [--format table|json|csv]
-  wln [global options] units status [UNIT] [--offline] [--inactive DURATION]
-  wln [global options] messages get UNIT [--from RFC3339] [--to RFC3339] [--output FILE.csv]
-  wln [global options] messages tail UNIT [-n COUNT] [--follow]
-  wln [global options] messages export UNIT --format txt|kml|plt|wln|wlb
-  wln [global options] doctor
-  wln [global options] api call SERVICE [--params JSON|@FILE]
-
-Global options:
-  --profile NAME     override the default profile
-  --config PATH      override the configuration file
-  --timeout DURATION HTTP timeout (default 2m)
-  --version          print version
-
-UNIT may be an exact Wialon ID, exact unit name, or exact unique ID/IMEI.`)
+	_ = printCommandHelp(w, nil)
 }
 
 func runProfile(ctx context.Context, args []string, opts options) error {

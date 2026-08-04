@@ -34,6 +34,23 @@ make build
 ./bin/wln --version
 ```
 
+## Built-in help
+
+The help is hierarchical and does not require a configured profile or network
+access. Open a command group, a specific command, or one self-contained manual:
+
+```sh
+wln help
+wln help messages
+wln help messages get
+wln messages get --help
+wln help --all
+```
+
+`wln help --all` is intended for shell agents and LLMs that have only the
+binary: it includes every command, argument, default, constraint, and example
+in one output.
+
 ## Log in and create a profile
 
 The normal login flow opens Wialon's authorization page in the system browser,
@@ -236,10 +253,14 @@ published.
 wln messages tail 1001
 wln messages tail 1001 -n 100 --format ndjson
 wln messages tail 1001 --follow --poll 2s
+wln messages tail 1001 --max-params 60
+wln messages tail 1001 --full-params
 ```
 
-`--follow` polls for new messages until interrupted. Use `--all-types` to
-include events, commands, logs, and other non-telemetry messages.
+`--follow` polls for new messages until interrupted. Table output shortens the
+parameter JSON to 100 characters by default; use `--max-params` to change the
+limit or `--full-params` to disable it. Use `--all-types` to include events,
+commands, logs, and other non-telemetry messages.
 
 ### Native Wialon export
 
@@ -251,7 +272,9 @@ wln messages export 1001 --last 24h --format kml
 wln messages export 1001 --yesterday --format wlb --compress
 ```
 
-Supported formats are `txt`, `kml`, `plt`, `wln`, and `wlb`.
+Supported formats are `kml`, `plt`, `wln`, and `wlb`. Although some Wialon API
+documentation also lists `txt`, Wialon Hosting currently rejects that value as
+invalid input, so `wln` does not advertise an option it cannot reliably export.
 
 ## Diagnose a profile
 
