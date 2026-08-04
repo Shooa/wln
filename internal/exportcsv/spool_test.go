@@ -1,10 +1,13 @@
 package exportcsv
 
 import (
+	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +53,32 @@ func TestSpoolFlattensDynamicMessageFields(t *testing.T) {
 	}
 	if rows[1][indexOf(rows[0], "p.sensor_value")] != "100" {
 		t.Fatalf("sensor_value row = %v", rows[1])
+	}
+}
+
+func TestSpoolWritesJSONAndNDJSON(t *testing.T) {
+	spool, err := NewSpool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	if err := spool.Add(map[string]any{"t": 1.0, "p": map[string]any{"value": 7.0}}); err != nil {
+		t.Fatal(err)
+	}
+	var ndjson bytes.Buffer
+	if err := spool.WriteTo(&ndjson, "ndjson"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ndjson.String(), `"value":7`) {
+		t.Fatalf("ndjson = %s", ndjson.String())
+	}
+	var array bytes.Buffer
+	if err := spool.WriteTo(&array, "json"); err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(array.Bytes(), &decoded); err != nil || len(decoded) != 1 {
+		t.Fatalf("json = %s, err=%v", array.String(), err)
 	}
 }
 

@@ -52,6 +52,10 @@ func (s *Spool) Add(message map[string]any) error {
 func (s *Spool) Rows() int { return s.rows }
 
 func (s *Spool) WriteCSV(output string, force bool) error {
+	return s.Write(output, force, "csv")
+}
+
+func (s *Spool) Write(output string, force bool, format string) error {
 	if !force {
 		if _, err := os.Stat(output); err == nil {
 			return fmt.Errorf("output %s already exists (use --force to replace it)", output)
@@ -76,10 +80,44 @@ func (s *Spool) WriteCSV(output string, force bool) error {
 		return fmt.Errorf("secure temporary CSV: %w", err)
 	}
 
+	if err := s.WriteTo(out, format); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("sync output: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close output: %w", err)
+	}
+	if err := os.Rename(tmpName, output); err != nil {
+		return fmt.Errorf("publish output: %w", err)
+	}
+	return nil
+}
+
+func (s *Spool) WriteTo(out io.Writer, format string) error {
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind message spool: %w", err)
+	}
+	switch format {
+	case "csv":
+		return s.writeCSVTo(out)
+	case "ndjson":
+		_, err := io.Copy(out, s.file)
+		return err
+	case "json":
+		return s.writeJSONTo(out)
+	default:
+		return fmt.Errorf("unsupported output format %q", format)
+	}
+}
+
+func (s *Spool) writeCSVTo(out io.Writer) error {
 	headers := orderedHeaders(s.columns)
 	w := csv.NewWriter(out)
 	if err := w.Write(headers); err != nil {
-		out.Close()
 		return fmt.Errorf("write CSV header: %w", err)
 	}
 	scanner := bufio.NewScanner(s.file)
@@ -90,7 +128,6 @@ func (s *Spool) WriteCSV(output string, force bool) error {
 		decoder := json.NewDecoder(bytesReader(scanner.Bytes()))
 		decoder.UseNumber()
 		if err := decoder.Decode(&message); err != nil {
-			out.Close()
 			return fmt.Errorf("decode spooled message: %w", err)
 		}
 		flat := make(map[string]any)
@@ -100,30 +137,42 @@ func (s *Spool) WriteCSV(output string, force bool) error {
 			row[i] = cell(flat[name])
 		}
 		if err := w.Write(row); err != nil {
-			out.Close()
 			return fmt.Errorf("write CSV row: %w", err)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		out.Close()
 		return fmt.Errorf("read message spool: %w", err)
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
-		out.Close()
 		return fmt.Errorf("flush CSV: %w", err)
 	}
-	if err := out.Sync(); err != nil {
-		out.Close()
-		return fmt.Errorf("sync CSV: %w", err)
-	}
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("close CSV: %w", err)
-	}
-	if err := os.Rename(tmpName, output); err != nil {
-		return fmt.Errorf("publish CSV: %w", err)
-	}
 	return nil
+}
+
+func (s *Spool) writeJSONTo(out io.Writer) error {
+	if _, err := io.WriteString(out, "[\n"); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(s.file)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
+	first := true
+	for scanner.Scan() {
+		if !first {
+			if _, err := io.WriteString(out, ",\n"); err != nil {
+				return err
+			}
+		}
+		first = false
+		if _, err := out.Write(scanner.Bytes()); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	_, err := io.WriteString(out, "\n]\n")
+	return err
 }
 
 func (s *Spool) Close() error {

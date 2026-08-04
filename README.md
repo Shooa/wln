@@ -95,6 +95,7 @@ never shows tokens:
 ```sh
 wln profile list
 wln profile use hosting
+wln profile check hosting
 wln profile remove old-profile
 ```
 
@@ -138,6 +139,29 @@ JSON retains both the readable name and raw Wialon ID:
 ]
 ```
 
+### Unit status and stale positions
+
+Show connection state, the last coordinate, its age, the last message, and the
+last known position:
+
+```sh
+wln units status
+wln units status 1001
+wln units status --offline --stale 30d --sort age --limit 20
+wln units status --offline --inactive 30d --sort age
+```
+
+The default `age` order puts units with no known position first, followed by
+the oldest positions. `--stale` is based on the coordinate timestamp, not the
+last arbitrary message timestamp, so the two are shown separately. For reuse
+candidates, `--inactive` is safer: it requires both the last position and the
+last message to be older than the threshold.
+
+```text
+The table also includes the current unique ID, making the selected unit
+unambiguous before its connectivity settings are changed.
+```
+
 ## Export messages
 
 The unit argument accepts an exact Wialon ID, exact name, or exact unique
@@ -163,6 +187,24 @@ wln messages get 1001 \
   --output /tmp/wialon-123456789012345.csv
 ```
 
+Relative and calendar intervals are also supported:
+
+```sh
+wln messages get 1001 --last 2h
+wln messages get 1001 --last 7d
+wln messages get 1001 --today
+wln messages get 1001 --yesterday
+wln messages get 1001 --since 08:30
+```
+
+Write structured data to stdout for pipelines, or retain only selected message
+parameters:
+
+```sh
+wln messages get 1001 --last 30m --format ndjson --output -
+wln messages get 1001 --today --format json --params temperature,voltage
+```
+
 By default, only telemetry/data messages are selected. Pass `--all-types` to
 include events, commands, logs, and other Wialon message types. Existing output
 is not replaced unless `--force` is specified.
@@ -183,9 +225,45 @@ Preferred columns are ordered first when present:
 t,r,rt,tp,f,i,o,pos.x,pos.y,pos.z,pos.s,pos.c,pos.sc,...sorted dynamic fields
 ```
 
-All discovered parameters are retained as `p.<name>` columns. The CSV is built
-through a private temporary NDJSON spool so large exports do not have to remain
-in memory and partially written destination files are not published.
+All discovered parameters are retained as `p.<name>` columns. CSV, JSON, and
+NDJSON files are built through a private temporary spool so large exports do
+not have to remain in memory and partially written destination files are not
+published.
+
+### Latest messages
+
+```sh
+wln messages tail 1001
+wln messages tail 1001 -n 100 --format ndjson
+wln messages tail 1001 --follow --poll 2s
+```
+
+`--follow` polls for new messages until interrupted. Use `--all-types` to
+include events, commands, logs, and other non-telemetry messages.
+
+### Native Wialon export
+
+Download formats produced directly by Wialon without converting them:
+
+```sh
+wln messages export 1001 --today --format wln
+wln messages export 1001 --last 24h --format kml
+wln messages export 1001 --yesterday --format wlb --compress
+```
+
+Supported formats are `txt`, `kml`, `plt`, `wln`, and `wlb`.
+
+## Diagnose a profile
+
+```sh
+wln doctor
+wln --profile staging doctor
+wln profile check hosting
+```
+
+The diagnostic checks the configuration, selected profile, API login latency,
+server time, authenticated user, and accessible unit count without displaying
+the token or session ID.
 
 ## Raw API fallback
 
@@ -222,7 +300,9 @@ follow their positional argument, matching the examples above.
 - [`core/search_items`](https://help.wialon.com/en/api/user-guide/api-reference/core/search_items)
 - [`core/get_hw_types`](https://help.wialon.com/en/api/user-guide/api-reference/core/get_hw_types)
 - [`messages/load_interval`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_interval)
+- [`messages/load_last`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_last)
 - [`messages/get_messages`](https://help.wialon.com/en/api/user-guide/api-reference/messages/get_messages)
+- [`exchange/export_messages`](https://help.wialon.com/en/api/user-guide/api-reference/exchange/export_messages)
 - [Message data format](https://help.wialon.com/en/api/user-guide/data-format/messages)
 - [Remote API limitations](https://help.wialon.com/en/api/user-guide/limitations)
 

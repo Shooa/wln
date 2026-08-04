@@ -15,12 +15,19 @@ import (
 
 const maxResponseBytes = 512 << 20
 
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 type Client struct {
 	endpoint string
 	http     *http.Client
 	sid      string
+	info     SessionInfo
+}
+
+type SessionInfo struct {
+	UserID     int64  `json:"user_id,omitempty"`
+	UserName   string `json:"user_name,omitempty"`
+	ServerTime int64  `json:"server_time,omitempty"`
 }
 
 type APIError struct {
@@ -93,7 +100,12 @@ func (c *Client) Login(ctx context.Context, token, operateAs string) error {
 		params["operateAs"] = operateAs
 	}
 	var response struct {
-		EID string `json:"eid"`
+		EID  string `json:"eid"`
+		Time int64  `json:"tm"`
+		User struct {
+			ID   int64  `json:"id"`
+			Name string `json:"nm"`
+		} `json:"user"`
 	}
 	if err := c.call(ctx, "token/login", params, "", &response); err != nil {
 		return fmt.Errorf("login: %w", err)
@@ -102,8 +114,11 @@ func (c *Client) Login(ctx context.Context, token, operateAs string) error {
 		return errors.New("login: Wialon returned no session ID")
 	}
 	c.sid = response.EID
+	c.info = SessionInfo{UserID: response.User.ID, UserName: response.User.Name, ServerTime: response.Time}
 	return nil
 }
+
+func (c *Client) SessionInfo() SessionInfo { return c.info }
 
 func (c *Client) Logout(ctx context.Context) error {
 	if c.sid == "" {
@@ -195,6 +210,26 @@ type Unit struct {
 	HardwareID int64  `json:"hardware_id,omitempty"`
 }
 
+type Position struct {
+	Time       int64   `json:"time,omitempty"`
+	Latitude   float64 `json:"latitude,omitempty"`
+	Longitude  float64 `json:"longitude,omitempty"`
+	Altitude   float64 `json:"altitude,omitempty"`
+	Speed      int     `json:"speed,omitempty"`
+	Course     int     `json:"course,omitempty"`
+	Satellites int     `json:"satellites,omitempty"`
+}
+
+type UnitStatus struct {
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	UniqueID        string   `json:"unique_id,omitempty"`
+	Online          bool     `json:"online"`
+	LastMessageTime int64    `json:"last_message_time,omitempty"`
+	PointAgeSeconds int64    `json:"point_age_seconds,omitempty"`
+	Position        Position `json:"position,omitempty"`
+}
+
 func (c *Client) Units(ctx context.Context, nameMask string) ([]Unit, error) {
 	if nameMask == "" {
 		nameMask = "*"
@@ -229,6 +264,64 @@ func (c *Client) Units(ctx context.Context, nameMask string) ([]Unit, error) {
 		units = append(units, Unit{ID: item.ID, Name: item.Name, UniqueID: item.UID, UniqueID2: item.UID2, HardwareID: item.HW})
 	}
 	return units, nil
+}
+
+func (c *Client) UnitStatuses(ctx context.Context, nameMask string) ([]UnitStatus, error) {
+	if nameMask == "" {
+		nameMask = "*"
+	}
+	params := map[string]any{
+		"spec": map[string]any{
+			"itemsType": "avl_unit", "propName": "sys_name", "propValueMask": nameMask,
+			"sortType": "sys_name", "propType": "property",
+		},
+		"force": 1, "flags": 1 + 256 + 1024 + 2097152 + 4194304, "from": 0, "to": 0,
+	}
+	var response struct {
+		Items []struct {
+			ID       int64           `json:"id"`
+			Name     string          `json:"nm"`
+			UID      string          `json:"uid"`
+			NetConn  json.RawMessage `json:"netconn"`
+			Position *struct {
+				Time       int64   `json:"t"`
+				Latitude   float64 `json:"y"`
+				Longitude  float64 `json:"x"`
+				Altitude   float64 `json:"z"`
+				Speed      int     `json:"s"`
+				Course     int     `json:"c"`
+				Satellites int     `json:"sc"`
+			} `json:"pos"`
+			LastMessage *struct {
+				Time int64 `json:"t"`
+			} `json:"lmsg"`
+		} `json:"items"`
+	}
+	if err := c.Call(ctx, "core/search_items", params, &response); err != nil {
+		return nil, fmt.Errorf("get unit status: %w", err)
+	}
+	statuses := make([]UnitStatus, 0, len(response.Items))
+	for _, item := range response.Items {
+		status := UnitStatus{ID: item.ID, Name: item.Name, UniqueID: item.UID, Online: connectionValue(item.NetConn)}
+		if item.LastMessage != nil {
+			status.LastMessageTime = item.LastMessage.Time
+		}
+		if item.Position != nil {
+			status.Position = Position{Time: item.Position.Time, Latitude: item.Position.Latitude, Longitude: item.Position.Longitude,
+				Altitude: item.Position.Altitude, Speed: item.Position.Speed, Course: item.Position.Course, Satellites: item.Position.Satellites}
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+func connectionValue(raw json.RawMessage) bool {
+	var boolean bool
+	if json.Unmarshal(raw, &boolean) == nil {
+		return boolean
+	}
+	var number int
+	return json.Unmarshal(raw, &number) == nil && number != 0
 }
 
 type HardwareType struct {
@@ -292,6 +385,22 @@ func (c *Client) LoadMessages(ctx context.Context, unitID int64, from, to int64,
 	return response, nil
 }
 
+func (c *Client) LoadLast(ctx context.Context, unitID, lastTime int64, count int, allTypes bool) (LoadResult, error) {
+	flags, mask := 0, 65280
+	if allTypes {
+		mask = 0
+	}
+	params := map[string]any{
+		"itemId": unitID, "lastTime": lastTime, "lastCount": count,
+		"flags": flags, "flagsMask": mask, "loadCount": count,
+	}
+	var response LoadResult
+	if err := c.Call(ctx, "messages/load_last", params, &response); err != nil {
+		return LoadResult{}, fmt.Errorf("load last messages: %w", err)
+	}
+	return response, nil
+}
+
 func (c *Client) GetMessages(ctx context.Context, from, to int) ([]map[string]any, error) {
 	params := map[string]any{"indexFrom": from, "indexTo": to}
 	var response []map[string]any
@@ -307,4 +416,53 @@ func (c *Client) UnloadMessages(ctx context.Context) error {
 		return fmt.Errorf("unload messages: %w", err)
 	}
 	return nil
+}
+
+func (c *Client) Download(ctx context.Context, service string, params any) ([]byte, string, error) {
+	if c.sid == "" {
+		return nil, "", errors.New("not logged in")
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode parameters: %w", err)
+	}
+	form := url.Values{"svc": {service}, "params": {string(encoded)}, "sid": {c.sid}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("User-Agent", "wln/"+Version)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("request %s: %w", service, err)
+	}
+	defer resp.Body.Close()
+	var body io.Reader = resp.Body
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode gzip response: %w", err)
+		}
+		defer gz.Close()
+		body = gz
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("HTTP %s from Wialon", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("read download: %w", err)
+	}
+	if len(data) > maxResponseBytes {
+		return nil, "", fmt.Errorf("download exceeds %d bytes", maxResponseBytes)
+	}
+	var apiErr struct {
+		Error *int `json:"error"`
+	}
+	if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != nil && *apiErr.Error != 0 {
+		return nil, "", &APIError{Code: *apiErr.Error}
+	}
+	return data, resp.Header.Get("Content-Type"), nil
 }

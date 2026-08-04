@@ -24,7 +24,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 var openBrowser = browseropen.Open
 
@@ -71,6 +71,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runUnits(ctx, rest[1:], opts)
 	case "messages":
 		return runMessages(ctx, rest[1:], opts)
+	case "doctor":
+		return runDoctor(ctx, rest[1:], opts)
 	case "api":
 		return runAPI(ctx, rest[1:], opts)
 	default:
@@ -87,8 +89,13 @@ Usage:
   wln [global options] profile login NAME --server BASE_URL
   wln [global options] profile use NAME
   wln [global options] profile remove NAME
+  wln [global options] profile check [NAME]
   wln [global options] units list [--search MASK] [--format table|json|csv]
+  wln [global options] units status [UNIT] [--offline] [--inactive DURATION]
   wln [global options] messages get UNIT [--from RFC3339] [--to RFC3339] [--output FILE.csv]
+  wln [global options] messages tail UNIT [-n COUNT] [--follow]
+  wln [global options] messages export UNIT --format txt|kml|plt|wln|wlb
+  wln [global options] doctor
   wln [global options] api call SERVICE [--params JSON|@FILE]
 
 Global options:
@@ -102,7 +109,7 @@ UNIT may be an exact Wialon ID, exact unit name, or exact unique ID/IMEI.`)
 
 func runProfile(ctx context.Context, args []string, opts options) error {
 	if len(args) == 0 {
-		return errors.New("profile command is required: list, add, use, or remove")
+		return errors.New("profile command is required: list, add, login, use, remove, or check")
 	}
 	cfg, err := config.Load(opts.configPath)
 	if err != nil {
@@ -264,6 +271,14 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		}
 		fmt.Fprintf(opts.stdout, "Profile %q removed.\n", args[1])
 		return nil
+	case "check":
+		if len(args) > 2 {
+			return errors.New("usage: wln profile check [NAME]")
+		}
+		if len(args) == 2 {
+			opts.profile = args[1]
+		}
+		return runDoctor(ctx, nil, opts)
 	default:
 		return fmt.Errorf("unknown profile command %q", args[0])
 	}
@@ -340,14 +355,25 @@ func printProfiles(cfg *config.File, format string, out io.Writer) error {
 }
 
 func runUnits(ctx context.Context, args []string, opts options) error {
-	if len(args) == 0 || args[0] != "list" {
-		return errors.New("usage: wln units list [--search MASK] [--format table|json|csv]")
+	if len(args) == 0 {
+		return errors.New("usage: wln units list|status")
 	}
+	switch args[0] {
+	case "list":
+		return runUnitsList(ctx, args[1:], opts)
+	case "status":
+		return runUnitsStatus(ctx, args[1:], opts)
+	default:
+		return fmt.Errorf("unknown units command %q", args[0])
+	}
+}
+
+func runUnitsList(ctx context.Context, args []string, opts options) error {
 	fs := flag.NewFlagSet("units list", flag.ContinueOnError)
 	fs.SetOutput(opts.stderr)
 	search := fs.String("search", "*", "Wialon unit name mask")
 	format := fs.String("format", "table", "table, json, or csv")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	return withClient(ctx, opts, func(client *wialon.Client) error {
@@ -404,22 +430,45 @@ func printUnits(units []wialon.Unit, format string, out io.Writer) error {
 }
 
 func runMessages(ctx context.Context, args []string, opts options) error {
-	if len(args) < 2 || args[0] != "get" {
-		return errors.New("usage: wln messages get UNIT [--from RFC3339] [--to RFC3339] [--output FILE.csv]")
+	if len(args) == 0 {
+		return errors.New("usage: wln messages get|tail|export UNIT [options]")
+	}
+	switch args[0] {
+	case "get":
+		return runMessagesGet(ctx, args, opts)
+	case "tail":
+		return runMessagesTail(ctx, args[1:], opts)
+	case "export":
+		return runMessagesExport(ctx, args[1:], opts)
+	default:
+		return fmt.Errorf("unknown messages command %q", args[0])
+	}
+}
+
+func runMessagesGet(ctx context.Context, args []string, opts options) error {
+	if len(args) < 2 {
+		return errors.New("usage: wln messages get UNIT [--from RFC3339] [--to RFC3339] [--output FILE]")
 	}
 	unitRef := args[1]
 	fs := flag.NewFlagSet("messages get", flag.ContinueOnError)
 	fs.SetOutput(opts.stderr)
 	fromText := fs.String("from", "", "interval start in RFC3339 with an explicit offset (default: today at 00:00 local time)")
 	toText := fs.String("to", "", "interval end in RFC3339 with an explicit offset (default: now)")
+	var last flexibleDuration
+	fs.Var(&last, "last", "relative interval ending now, for example 2h or 7d")
+	today := fs.Bool("today", false, "today from local midnight through now")
+	yesterday := fs.Bool("yesterday", false, "previous local calendar day")
+	since := fs.String("since", "", "interval start as RFC3339 or local HH:MM")
 	batchSize := fs.Int("batch-size", 10000, "messages per API response")
-	output := fs.String("output", "", "CSV output path (default: wialon-UNIQUE_ID-YYYY-MM-DD.csv)")
+	output := fs.String("output", "", "output path; - writes data to stdout")
+	format := fs.String("format", "csv", "csv, json, or ndjson")
+	paramsFilter := fs.String("params", "", "comma-separated message parameters to retain")
 	allTypes := fs.Bool("all-types", false, "include non-telemetry messages")
 	force := fs.Bool("force", false, "replace an existing output file")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
-	from, to, err := messageInterval(*fromText, *toText, time.Now())
+	from, to, err := resolveMessageInterval(*fromText, *toText, last.Duration, *today, *yesterday, *since, time.Now())
 	if err != nil {
 		return err
 	}
@@ -429,8 +478,9 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 	if *batchSize < 1 || *batchSize > 100000 {
 		return errors.New("--batch-size must be between 1 and 100000")
 	}
-	if *output != "" && strings.ToLower(filepath.Ext(*output)) != ".csv" {
-		return errors.New("--output must have a .csv extension")
+	*format = strings.ToLower(*format)
+	if *format != "csv" && *format != "json" && *format != "ndjson" {
+		return errors.New("--format must be csv, json, or ndjson")
 	}
 
 	return withClient(ctx, opts, func(client *wialon.Client) error {
@@ -440,15 +490,18 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 		}
 		outputPath := *output
 		if outputPath == "" {
-			outputPath = defaultMessageOutput(unit, from)
+			outputPath = defaultMessageOutputFormat(unit, from, *format)
 		}
-		absOutput, err := filepath.Abs(outputPath)
-		if err != nil {
-			return fmt.Errorf("resolve output path: %w", err)
+		absOutput := outputPath
+		if outputPath != "-" {
+			absOutput, err = filepath.Abs(outputPath)
+			if err != nil {
+				return fmt.Errorf("resolve output path: %w", err)
+			}
 		}
 		fmt.Fprintf(opts.stderr, "Unit: %s (id=%d, unique_id=%s)\n", unit.Name, unit.ID, unit.UniqueID)
 		fmt.Fprintf(opts.stderr, "Interval: %s — %s\n", from.Format(time.RFC3339), to.Format(time.RFC3339))
-		printMessagesCommand(opts.stderr, unitRef, from, to, outputPath, *batchSize, *allTypes, *force)
+		printMessagesCommand(opts.stderr, unitRef, from, to, outputPath, *format, *paramsFilter, *batchSize, *allTypes, *force)
 
 		spool, err := exportcsv.NewSpool()
 		if err != nil {
@@ -472,6 +525,7 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 			return fmt.Errorf("invalid Wialon response: received %d initial messages for count %d", len(loaded.Messages), loaded.Count)
 		}
 		for _, message := range loaded.Messages {
+			message = filterMessageParams(message, *paramsFilter)
 			if err := spool.Add(message); err != nil {
 				return err
 			}
@@ -489,6 +543,7 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 				return fmt.Errorf("Wialon returned an empty batch at index %d of %d", index, loaded.Count)
 			}
 			for _, message := range messages {
+				message = filterMessageParams(message, *paramsFilter)
 				if err := spool.Add(message); err != nil {
 					return err
 				}
@@ -502,15 +557,48 @@ func runMessages(ctx context.Context, args []string, opts options) error {
 		if spool.Rows() != loaded.Count {
 			return fmt.Errorf("row count mismatch: Wialon reported %d, fetched %d", loaded.Count, spool.Rows())
 		}
-		if err := spool.WriteCSV(absOutput, *force); err != nil {
-			return err
+		if outputPath == "-" {
+			if err := spool.WriteTo(opts.stdout, *format); err != nil {
+				return err
+			}
+			fmt.Fprintf(opts.stderr, "Exported %d messages to stdout.\n", spool.Rows())
+		} else {
+			if err := spool.Write(absOutput, *force, *format); err != nil {
+				return err
+			}
+			fmt.Fprintf(opts.stdout, "Exported %d messages to %s\n", spool.Rows(), absOutput)
 		}
-		fmt.Fprintf(opts.stdout, "Exported %d messages to %s\n", spool.Rows(), absOutput)
 		return nil
 	})
 }
 
 func messageInterval(fromText, toText string, now time.Time) (time.Time, time.Time, error) {
+	return resolveMessageInterval(fromText, toText, 0, false, false, "", now)
+}
+
+func resolveMessageInterval(fromText, toText string, last time.Duration, today, yesterday bool, since string, now time.Time) (time.Time, time.Time, error) {
+	shortcuts := 0
+	if last != 0 {
+		shortcuts++
+	}
+	if today {
+		shortcuts++
+	}
+	if yesterday {
+		shortcuts++
+	}
+	if since != "" {
+		shortcuts++
+	}
+	if shortcuts > 1 || (shortcuts > 0 && fromText != "") {
+		return time.Time{}, time.Time{}, errors.New("use only one of --from, --last, --today, --yesterday, or --since")
+	}
+	if (today || yesterday) && toText != "" {
+		return time.Time{}, time.Time{}, errors.New("--today and --yesterday cannot be combined with --to")
+	}
+	if last < 0 {
+		return time.Time{}, time.Time{}, errors.New("--last must be positive")
+	}
 	to := now
 	var err error
 	if toText != "" {
@@ -520,6 +608,27 @@ func messageInterval(fromText, toText string, now time.Time) (time.Time, time.Ti
 		}
 	}
 	from := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, to.Location())
+	if last > 0 {
+		from = to.Add(-last)
+	}
+	if yesterday {
+		to = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		from = to.AddDate(0, 0, -1)
+	}
+	if today {
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		to = now
+	}
+	if since != "" {
+		if parsed, parseErr := time.ParseInLocation("15:04", since, now.Location()); parseErr == nil {
+			from = time.Date(now.Year(), now.Month(), now.Day(), parsed.Hour(), parsed.Minute(), 0, 0, now.Location())
+		} else {
+			from, err = parseTime(since)
+			if err != nil {
+				return time.Time{}, time.Time{}, fmt.Errorf("--since: expected HH:MM or RFC3339: %w", err)
+			}
+		}
+	}
 	if fromText != "" {
 		from, err = parseTime(fromText)
 		if err != nil {
@@ -530,11 +639,15 @@ func messageInterval(fromText, toText string, now time.Time) (time.Time, time.Ti
 }
 
 func defaultMessageOutput(unit wialon.Unit, from time.Time) string {
+	return defaultMessageOutputFormat(unit, from, "csv")
+}
+
+func defaultMessageOutputFormat(unit wialon.Unit, from time.Time, format string) string {
 	identifier := unit.UniqueID
 	if identifier == "" {
 		identifier = strconv.FormatInt(unit.ID, 10)
 	}
-	return fmt.Sprintf("wialon-%s-%s.csv", safeFilenamePart(identifier), from.Format("2006-01-02"))
+	return fmt.Sprintf("wialon-%s-%s.%s", safeFilenamePart(identifier), from.Format("2006-01-02"), format)
 }
 
 func safeFilenamePart(value string) string {
@@ -550,12 +663,16 @@ func safeFilenamePart(value string) string {
 	return result.String()
 }
 
-func printMessagesCommand(w io.Writer, unitRef string, from, to time.Time, output string, batchSize int, allTypes, force bool) {
+func printMessagesCommand(w io.Writer, unitRef string, from, to time.Time, output, format, params string, batchSize int, allTypes, force bool) {
 	fmt.Fprintln(w, "Repeat command:")
 	fmt.Fprintf(w, "  wln messages get %s \\\n", shellQuote(unitRef))
 	fmt.Fprintf(w, "    --from %s \\\n", shellQuote(from.Format(time.RFC3339)))
 	fmt.Fprintf(w, "    --to %s \\\n", shellQuote(to.Format(time.RFC3339)))
 	fmt.Fprintf(w, "    --batch-size %d \\\n", batchSize)
+	fmt.Fprintf(w, "    --format %s \\\n", shellQuote(format))
+	if params != "" {
+		fmt.Fprintf(w, "    --params %s \\\n", shellQuote(params))
+	}
 	fmt.Fprintf(w, "    --output %s", shellQuote(output))
 	if allTypes {
 		fmt.Fprint(w, " \\\n    --all-types")
@@ -564,6 +681,33 @@ func printMessagesCommand(w io.Writer, unitRef string, from, to time.Time, outpu
 		fmt.Fprint(w, " \\\n    --force")
 	}
 	fmt.Fprintln(w)
+}
+
+func filterMessageParams(message map[string]any, filter string) map[string]any {
+	if strings.TrimSpace(filter) == "" {
+		return message
+	}
+	wanted := make(map[string]bool)
+	for _, name := range strings.Split(filter, ",") {
+		name = strings.TrimSpace(strings.TrimPrefix(name, "p."))
+		if name != "" {
+			wanted[name] = true
+		}
+	}
+	copyMessage := make(map[string]any, len(message))
+	for key, value := range message {
+		copyMessage[key] = value
+	}
+	if params, ok := message["p"].(map[string]any); ok {
+		selected := make(map[string]any)
+		for name, value := range params {
+			if wanted[name] {
+				selected[name] = value
+			}
+		}
+		copyMessage["p"] = selected
+	}
+	return copyMessage
 }
 
 func shellQuote(value string) string {
