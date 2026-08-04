@@ -20,11 +20,12 @@ import (
 	"github.com/Shooa/wln/internal/config"
 	"github.com/Shooa/wln/internal/exportcsv"
 	"github.com/Shooa/wln/internal/oauthflow"
+	"github.com/Shooa/wln/internal/selfupdate"
 	"github.com/Shooa/wln/internal/texttable"
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.5.1"
+var Version = "0.6.0"
 
 var openBrowser = browseropen.Open
 
@@ -87,11 +88,51 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runMessages(ctx, rest[1:], opts)
 	case "doctor":
 		return runDoctor(ctx, rest[1:], opts)
+	case "update":
+		return runUpdate(ctx, rest[1:], opts)
 	case "api":
 		return runAPI(ctx, rest[1:], opts)
 	default:
 		return fmt.Errorf("unknown command %q", rest[0])
 	}
+}
+
+func runUpdate(ctx context.Context, args []string, opts options) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(opts.stderr)
+	checkOnly := fs.Bool("check", false, "check for a new release without installing it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wln update [--check]")
+	}
+	if *checkOnly {
+		info, err := selfupdate.Check(ctx, Version, true)
+		if err != nil {
+			return err
+		}
+		if info.Available {
+			fmt.Fprintf(opts.stdout, "Update available: %s -> %s\n%s\n", Version, info.LatestVersion, info.URL)
+		} else {
+			fmt.Fprintf(opts.stdout, "wln %s is up to date.\n", Version)
+		}
+		return nil
+	}
+	result, err := selfupdate.Update(ctx, Version)
+	if err != nil {
+		return err
+	}
+	if result.Version == Version {
+		fmt.Fprintf(opts.stdout, "wln %s is already up to date.\n", Version)
+		return nil
+	}
+	if result.Deferred {
+		fmt.Fprintf(opts.stdout, "Downloaded wln %s. Windows will finish the update after this process exits.\n", result.Version)
+	} else {
+		fmt.Fprintf(opts.stdout, "Updated wln %s -> %s.\n", Version, result.Version)
+	}
+	return nil
 }
 
 func printUsage(w io.Writer) {

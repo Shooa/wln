@@ -24,3 +24,36 @@ jobs:
         run: go vet ./...
       - name: Verify release builds
         run: scripts/build-release.sh dev
+      - name: Test Unix installer
+        run: |
+          WLN_INSTALL_DIR="${RUNNER_TEMP}/wln-install" ./install.sh
+          "${RUNNER_TEMP}/wln-install/wln" --version
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1), [ref]$tokens, [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+          }
+      - name: Test PowerShell installer
+        shell: pwsh
+        run: |
+          $env:WLN_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "wln-install"
+          & ./install.ps1
+          & (Join-Path $env:WLN_INSTALL_DIR "wln.exe") --version

@@ -34,7 +34,7 @@ func printCommandHelp(w io.Writer, path []string) error {
 }
 
 func printAllHelp(w io.Writer) error {
-	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units status", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call"}
+	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units status", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w, "\n---"); err != nil {
@@ -60,6 +60,7 @@ COMMANDS
   messages  Export, tail, or download messages
   doctor    Validate the selected profile and API access
   api       Call a Remote API service directly
+  update    Check for and install the latest wln release
 
 GLOBAL OPTIONS
   --profile NAME      Override the configured default profile
@@ -279,6 +280,24 @@ USAGE
 
 Checks the selected profile, server, login latency, authenticated user, server
 time drift, and accessible unit count. Tokens and session IDs are not shown.`,
+
+	"update": `wln update — update the current executable
+
+USAGE
+  wln update [--check]
+
+OPTIONS
+  --check  Check GitHub Releases without installing the update
+
+The downloaded archive is verified against the release SHA256SUMS before the
+executable is replaced. On Windows, replacement finishes after wln exits.
+
+Automatic checks run at most once every 24 hours. Set WLN_NO_UPDATE_CHECK=1 to
+disable startup checks.
+
+EXAMPLES
+  wln update --check
+  wln update`,
 
 	"api": `wln api — direct Remote API access
 

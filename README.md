@@ -9,6 +9,23 @@ through the documented Remote API and never prints access tokens or session IDs.
 
 ## Install
 
+macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Shooa/wln/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Shooa/wln/main/install.ps1 | iex
+```
+
+Both installers detect the operating system and architecture, download the
+latest GitHub release, verify its SHA-256 checksum, and install `wln` in a
+per-user directory. The Unix installer uses `~/.local/bin`; override the target
+on either platform with `WLN_INSTALL_DIR`.
+
 Download the archive for your platform from
 [the latest GitHub release](https://github.com/Shooa/wln/releases/latest):
 
@@ -50,6 +67,29 @@ wln help --all
 `wln help --all` is intended for shell agents and LLMs that have only the
 binary: it includes every command, argument, default, constraint, and example
 in one output.
+
+## Updates
+
+`wln` checks GitHub Releases at startup at most once every 24 hours. When a new
+version is available in an interactive terminal, it offers to install the
+update before running the requested command. In non-interactive sessions it
+prints a notice and continues without prompting.
+
+Check or update explicitly:
+
+```sh
+wln update --check
+wln update
+```
+
+Release archives are always verified against `SHA256SUMS` before the executable
+is replaced. On Windows, a background helper finishes replacement immediately
+after the running process exits. Disable startup checks in automation when
+needed:
+
+```sh
+WLN_NO_UPDATE_CHECK=1 wln units list
+```
 
 ## Log in and create a profile
 
