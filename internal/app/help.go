@@ -127,6 +127,18 @@ GLOBAL OPTIONS
   --compact           Emit compact JSON where JSON output is selected
   --version           Print the wln version
 
+AGENT MODE
+  Invoke the same executable as wlna to select compact JSON defaults for
+  results, help, version information, and errors. Streaming message tails use
+  NDJSON. Explicit --format options override the default; place the global
+  --compact=false before the command to request indented JSON:
+
+    wlna --compact=false units get 1001
+
+  Agent mode disables automatic update prompts and writes message downloads to
+  stdout by default. Native 'messages export --output -' is the exception: its
+  stdout is the requested binary export, not JSON.
+
 HELP
   wln help COMMAND [SUBCOMMAND]
   wln COMMAND [SUBCOMMAND] --help

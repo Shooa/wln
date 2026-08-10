@@ -14,7 +14,7 @@ func TestHierarchicalHelp(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "root", args: []string{"help"}, want: []string{"COMMANDS", "wln help --all"}},
+		{name: "root", args: []string{"help"}, want: []string{"COMMANDS", "AGENT MODE", "wlna --compact=false", "binary export, not JSON", "wln help --all"}},
 		{name: "bare root", args: nil, want: []string{"COMMANDS", "wln help --all"}},
 		{name: "root flag", args: []string{"--help"}, want: []string{"COMMANDS", "GLOBAL OPTIONS"}},
 		{name: "group", args: []string{"help", "units"}, want: []string{"SUBCOMMANDS", "status  Show connectivity"}},
@@ -30,7 +30,7 @@ func TestHierarchicalHelp(t *testing.T) {
 		{name: "leaf", args: []string{"help", "units", "status"}, want: []string{"--inactive", "selecting an unused unit"}},
 		{name: "inline leaf", args: []string{"messages", "get", "--help"}, want: []string{"--last DURATION", "default is local midnight"}},
 		{name: "inline after argument", args: []string{"messages", "get", "1001", "--help"}, want: []string{"wln messages get UNIT", "--yesterday"}},
-		{name: "all", args: []string{"help", "--all"}, want: []string{"wln profile login", "wln messages tail", "wln api call", "wln update"}},
+		{name: "all", args: []string{"help", "--all"}, want: []string{"AGENT MODE", "wlna --compact=false", "wln profile login", "wln messages tail", "wln api call", "wln update"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
