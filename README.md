@@ -114,8 +114,9 @@ wln update
 
 Release archives are always verified against `SHA256SUMS` before the executable
 is replaced. On Windows, a background helper finishes replacement immediately
-after the running process exits. Disable startup checks in automation when
-needed:
+after the running process exits. Explicit `wln update` also creates or
+synchronizes the adjacent `wlna` command; invoking the update as `wlna` does the
+same for `wln`. Disable startup checks in automation when needed:
 
 ```sh
 WLN_NO_UPDATE_CHECK=1 wln units list

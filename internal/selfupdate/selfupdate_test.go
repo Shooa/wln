@@ -187,6 +187,46 @@ func TestUpdateReplacesUnixExecutable(t *testing.T) {
 	if !bytes.Equal(got, newBinary) {
 		t.Fatalf("installed binary = %q", got)
 	}
+	companion, err := os.ReadFile(filepath.Join(filepath.Dir(current), "wlna"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CompanionCreated || !bytes.Equal(companion, newBinary) {
+		t.Fatalf("companion = %q, result = %#v", companion, result)
+	}
+}
+
+func TestUpdateCreatesMissingCompanionWhenAlreadyCurrent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix replacement semantics")
+	}
+	restore := saveGlobals()
+	defer restore()
+	release := Release{TagName: "v1.2.3", HTMLURL: "https://example.test/release"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(release)
+	}))
+	defer server.Close()
+	apiURL = server.URL
+	dir := t.TempDir()
+	current := filepath.Join(dir, "wln")
+	binary := []byte("current executable")
+	if err := os.WriteFile(current, binary, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable = func() (string, error) { return current, nil }
+	cachePath = func() (string, error) { return filepath.Join(dir, "cache"), nil }
+	result, err := Update(context.Background(), "1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	companion, err := os.ReadFile(filepath.Join(dir, "wlna"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != "1.2.3" || !result.CompanionCreated || !bytes.Equal(companion, binary) {
+		t.Fatalf("result = %#v, companion = %q", result, companion)
+	}
 }
 
 func TestChecksumFor(t *testing.T) {

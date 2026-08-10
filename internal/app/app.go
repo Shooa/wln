@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.9.0"
+var Version = "0.9.1"
 
 var openBrowser = browseropen.Open
 
@@ -175,18 +175,34 @@ func runUpdate(ctx context.Context, args []string, opts options) error {
 	}
 	if result.Version == Version {
 		if opts.agentMode {
-			return writeJSON(opts.stdout, map[string]any{"updated": false, "version": Version}, opts.compact)
+			return writeJSON(opts.stdout, map[string]any{
+				"updated": false, "version": Version, "companion_created": result.CompanionCreated,
+				"companion_path": result.CompanionPath, "deferred": result.Deferred,
+			}, opts.compact)
 		}
 		fmt.Fprintf(opts.stdout, "wln %s is already up to date.\n", Version)
+		if result.CompanionCreated {
+			if result.Deferred {
+				fmt.Fprintf(opts.stdout, "The companion command will be installed to %s after this process exits.\n", result.CompanionPath)
+			} else {
+				fmt.Fprintf(opts.stdout, "Installed companion command: %s\n", result.CompanionPath)
+			}
+		}
 		return nil
 	}
 	if opts.agentMode {
-		return writeJSON(opts.stdout, map[string]any{"updated": true, "previous_version": Version, "version": result.Version, "deferred": result.Deferred}, opts.compact)
+		return writeJSON(opts.stdout, map[string]any{
+			"updated": true, "previous_version": Version, "version": result.Version, "deferred": result.Deferred,
+			"companion_created": result.CompanionCreated, "companion_path": result.CompanionPath,
+		}, opts.compact)
 	}
 	if result.Deferred {
 		fmt.Fprintf(opts.stdout, "Downloaded wln %s. Windows will finish the update after this process exits.\n", result.Version)
 	} else {
 		fmt.Fprintf(opts.stdout, "Updated wln %s -> %s.\n", Version, result.Version)
+	}
+	if result.CompanionCreated && !result.Deferred {
+		fmt.Fprintf(opts.stdout, "Installed companion command: %s\n", result.CompanionPath)
 	}
 	return nil
 }

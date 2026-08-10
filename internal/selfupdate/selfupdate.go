@@ -56,8 +56,10 @@ type Info struct {
 }
 
 type Result struct {
-	Version  string
-	Deferred bool
+	Version          string
+	Deferred         bool
+	CompanionPath    string
+	CompanionCreated bool
 }
 
 type cacheFile struct {
@@ -93,13 +95,6 @@ func Update(ctx context.Context, currentVersion string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if !info.Available && isReleaseVersion(currentVersion) {
-		return Result{Version: normalizeVersion(currentVersion)}, nil
-	}
-	data, err := downloadVerifiedBinary(ctx, info.Release)
-	if err != nil {
-		return Result{}, err
-	}
 	path, err := executable()
 	if err != nil {
 		return Result{}, fmt.Errorf("locate executable: %w", err)
@@ -108,11 +103,65 @@ func Update(ctx context.Context, currentVersion string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve executable: %w", err)
 	}
+	if !info.Available && isReleaseVersion(currentVersion) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return Result{}, fmt.Errorf("read current executable: %w", err)
+		}
+		companionPath, created, deferred, err := ensureCompanionExecutable(path, data)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{
+			Version: normalizeVersion(currentVersion), Deferred: deferred,
+			CompanionPath: companionPath, CompanionCreated: created,
+		}, nil
+	}
+	data, err := downloadVerifiedBinary(ctx, info.Release)
+	if err != nil {
+		return Result{}, err
+	}
 	deferred, err := replaceExecutable(path, data)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Version: info.LatestVersion, Deferred: deferred}, nil
+	companionPath, created, companionDeferred, err := ensureCompanionExecutable(path, data)
+	if err != nil {
+		return Result{}, fmt.Errorf("update companion executable: %w", err)
+	}
+	return Result{
+		Version: info.LatestVersion, Deferred: deferred || companionDeferred,
+		CompanionPath: companionPath, CompanionCreated: created,
+	}, nil
+}
+
+func ensureCompanionExecutable(path string, data []byte) (string, bool, bool, error) {
+	base := filepath.Base(path)
+	extension := filepath.Ext(base)
+	name := strings.TrimSuffix(base, extension)
+	var companionName string
+	switch strings.ToLower(name) {
+	case "wln":
+		companionName = "wlna" + extension
+	case "wlna":
+		companionName = "wln" + extension
+	default:
+		return "", false, false, nil
+	}
+	companionPath := filepath.Join(filepath.Dir(path), companionName)
+	info, err := os.Lstat(companionPath)
+	created := errors.Is(err, os.ErrNotExist)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return companionPath, false, false, nil
+	}
+	if err != nil && !created {
+		return "", false, false, fmt.Errorf("inspect companion executable: %w", err)
+	}
+	deferred, err := replaceExecutable(companionPath, data)
+	if err != nil {
+		return "", false, false, fmt.Errorf("install %s: %w", companionName, err)
+	}
+	return companionPath, created, deferred, nil
 }
 
 func releaseInfo(current string, release Release) Info {

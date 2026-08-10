@@ -10,7 +10,7 @@ import (
 
 func replaceExecutable(path string, data []byte) (bool, error) {
 	info, err := os.Stat(path)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return false, fmt.Errorf("inspect current executable: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".wln-update-*")
@@ -19,7 +19,10 @@ func replaceExecutable(path string, data []byte) (bool, error) {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	mode := info.Mode().Perm()
+	mode := os.FileMode(0o755)
+	if info != nil {
+		mode = info.Mode().Perm()
+	}
 	if mode&0o111 == 0 {
 		mode = 0o755
 	}

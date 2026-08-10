@@ -435,7 +435,9 @@ OPTIONS
   --check  Check GitHub Releases without installing the update
 
 The downloaded archive is verified against the release SHA256SUMS before the
-executable is replaced. On Windows, replacement finishes after wln exits.
+executable is replaced. The command also installs or synchronizes the companion
+name (wln or wlna) beside the current executable. On Windows, replacement
+finishes after wln exits.
 
 Automatic checks run at most once every 24 hours. Set WLN_NO_UPDATE_CHECK=1 to
 disable startup checks.
