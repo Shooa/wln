@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,14 +19,32 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if offerUpdate(ctx, os.Args[1:]) {
+	agentMode := isAgentInvocation(os.Args[0])
+	if !agentMode && offerUpdate(ctx, os.Args[1:]) {
 		return
 	}
 
-	if err := app.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	run := app.Run
+	if agentMode {
+		run = app.RunAgent
+	}
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		if agentMode {
+			_ = json.NewEncoder(os.Stderr).Encode(map[string]any{
+				"ok":    false,
+				"error": map[string]any{"message": err.Error()},
+			})
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "wln: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func isAgentInvocation(path string) bool {
+	path = strings.ReplaceAll(path, `\`, "/")
+	name := strings.TrimSuffix(strings.ToLower(filepath.Base(path)), ".exe")
+	return name == "wlna"
 }
 
 func offerUpdate(ctx context.Context, args []string) bool {

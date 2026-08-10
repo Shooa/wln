@@ -50,6 +50,11 @@ try {
     Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -Force -Path (Join-Path $ExtractDir "wln.exe") -Destination (Join-Path $InstallDir "wln.exe")
+    $AgentSource = Join-Path $ExtractDir "wlna.exe"
+    if (-not (Test-Path $AgentSource)) {
+        $AgentSource = Join-Path $ExtractDir "wln.exe"
+    }
+    Copy-Item -Force -Path $AgentSource -Destination (Join-Path $InstallDir "wlna.exe")
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $PathEntries = @($UserPath -split ";" | Where-Object { $_ })
@@ -59,7 +64,7 @@ try {
         $env:Path = "$env:Path;$InstallDir"
         Write-Host "Added $InstallDir to the user PATH. Open a new terminal to use it."
     }
-    Write-Host "Installed wln $Version to $(Join-Path $InstallDir 'wln.exe')"
+    Write-Host "Installed wln and wlna $Version to $InstallDir"
 } finally {
     if (Test-Path $TemporaryDir) {
         Remove-Item -Recurse -Force $TemporaryDir

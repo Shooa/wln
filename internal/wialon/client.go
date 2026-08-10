@@ -15,7 +15,9 @@ import (
 
 const maxResponseBytes = 512 << 20
 
-var Version = "0.8.0"
+var Version = "0.9.0"
+
+var ErrUnitNotFound = errors.New("unit not found")
 
 type Client struct {
 	endpoint string
@@ -270,6 +272,32 @@ func (c *Client) Units(ctx context.Context, nameMask string) ([]Unit, error) {
 		units = append(units, Unit{ID: item.ID, Name: item.Name, UniqueID: item.UID, UniqueID2: item.UID2, HardwareID: item.HW})
 	}
 	return units, nil
+}
+
+// Unit returns one item by its Wialon object ID without scanning all units.
+func (c *Client) Unit(ctx context.Context, id int64) (Unit, error) {
+	if id <= 0 {
+		return Unit{}, fmt.Errorf("unit ID must be positive, got %d", id)
+	}
+	var response struct {
+		Item *struct {
+			ID   int64  `json:"id"`
+			Name string `json:"nm"`
+			UID  string `json:"uid"`
+			UID2 string `json:"uid2"`
+			HW   int64  `json:"hw"`
+		} `json:"item"`
+	}
+	if err := c.Call(ctx, "core/search_item", map[string]any{"id": id, "flags": 257}, &response); err != nil {
+		return Unit{}, fmt.Errorf("get unit %d: %w", id, err)
+	}
+	if response.Item == nil || response.Item.ID == 0 {
+		return Unit{}, fmt.Errorf("%w: %d", ErrUnitNotFound, id)
+	}
+	return Unit{
+		ID: response.Item.ID, Name: response.Item.Name, UniqueID: response.Item.UID,
+		UniqueID2: response.Item.UID2, HardwareID: response.Item.HW,
+	}, nil
 }
 
 func (c *Client) UnitStatuses(ctx context.Context, nameMask string) ([]UnitStatus, error) {

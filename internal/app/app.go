@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.8.0"
+var Version = "0.9.0"
 
 var openBrowser = browseropen.Open
 
@@ -34,31 +34,46 @@ type options struct {
 	profile    string
 	timeout    time.Duration
 	tableWidth int
+	agentMode  bool
+	compact    bool
 	stdout     io.Writer
 	stderr     io.Writer
 }
 
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return run(ctx, args, stdout, stderr, false)
+}
+
+func RunAgent(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return run(ctx, args, stdout, stderr, true)
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, agentMode bool) error {
 	if len(args) == 0 {
-		return printCommandHelp(stdout, nil)
+		return printCommandHelpForMode(stdout, nil, agentMode, agentMode)
 	}
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		return printCommandHelp(stdout, nil)
+		return printCommandHelpForMode(stdout, nil, agentMode, agentMode)
 	}
 	if len(args) > 0 && args[0] == "help" {
-		return printCommandHelp(stdout, args[1:])
+		return printCommandHelpForMode(stdout, args[1:], agentMode, agentMode)
 	}
 	defaultConfig, err := config.DefaultPath()
 	if err != nil {
 		return err
 	}
 	global := flag.NewFlagSet("wln", flag.ContinueOnError)
-	global.SetOutput(stderr)
+	if agentMode {
+		global.SetOutput(io.Discard)
+	} else {
+		global.SetOutput(stderr)
+	}
 	configPath := global.String("config", defaultConfig, "configuration file")
 	profile := global.String("profile", "", "profile name (default: configured default)")
 	timeout := global.Duration("timeout", 2*time.Minute, "HTTP request timeout")
 	tableWidth := global.Int("width", 0, "table width; 0 detects the terminal")
 	wide := global.Bool("wide", false, "do not fit tables to the terminal width")
+	compact := global.Bool("compact", agentMode, "emit compact JSON where JSON output is selected")
 	version := global.Bool("version", false, "print version")
 	global.Usage = func() { printUsage(stderr) }
 	if err := global.Parse(args); err != nil {
@@ -68,6 +83,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *version {
+		if agentMode {
+			return writeJSON(stdout, map[string]any{"name": "wlna", "version": Version}, *compact)
+		}
 		fmt.Fprintf(stdout, "wln %s\n", Version)
 		return nil
 	}
@@ -76,24 +94,24 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
-		return printCommandHelp(stdout, nil)
+		return printCommandHelpForMode(stdout, nil, agentMode, *compact)
 	}
 	if rest[0] == "help" {
-		return printCommandHelp(stdout, rest[1:])
+		return printCommandHelpForMode(stdout, rest[1:], agentMode, *compact)
 	}
 	for i, arg := range rest {
 		if arg == "-h" || arg == "--help" {
-			return printCommandHelp(stdout, commandHelpPath(rest[:i]))
+			return printCommandHelpForMode(stdout, commandHelpPath(rest[:i]), agentMode, *compact)
 		}
 	}
 	if path := bareCommandHelpPath(rest); path != nil {
-		return printCommandHelp(stdout, path)
+		return printCommandHelpForMode(stdout, path, agentMode, *compact)
 	}
 	resolvedWidth := *tableWidth
 	if resolvedWidth == 0 && !*wide {
 		resolvedWidth = texttable.TerminalWidth(stdout)
 	}
-	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, tableWidth: resolvedWidth, stdout: stdout, stderr: stderr}
+	opts := options{configPath: *configPath, profile: *profile, timeout: *timeout, tableWidth: resolvedWidth, agentMode: agentMode, compact: *compact, stdout: stdout, stderr: stderr}
 	switch rest[0] {
 	case "profile":
 		return runProfile(ctx, rest[1:], opts)
@@ -112,6 +130,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 }
 
+func defaultFormat(opts options, human, agent string) string {
+	if opts.agentMode {
+		return agent
+	}
+	return human
+}
+
+func writeJSON(out io.Writer, value any, compact bool) error {
+	enc := json.NewEncoder(out)
+	if !compact {
+		enc.SetIndent("", "  ")
+	}
+	return enc.Encode(value)
+}
+
 func runUpdate(ctx context.Context, args []string, opts options) error {
 	fs := newCommandFlagSet("update", "update", opts)
 	checkOnly := fs.Bool("check", false, "check for a new release without installing it")
@@ -126,6 +159,9 @@ func runUpdate(ctx context.Context, args []string, opts options) error {
 		if err != nil {
 			return err
 		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"available": info.Available, "current_version": Version, "latest_version": info.LatestVersion, "url": info.URL}, opts.compact)
+		}
 		if info.Available {
 			fmt.Fprintf(opts.stdout, "Update available: %s -> %s\n%s\n", Version, info.LatestVersion, info.URL)
 		} else {
@@ -138,8 +174,14 @@ func runUpdate(ctx context.Context, args []string, opts options) error {
 		return err
 	}
 	if result.Version == Version {
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"updated": false, "version": Version}, opts.compact)
+		}
 		fmt.Fprintf(opts.stdout, "wln %s is already up to date.\n", Version)
 		return nil
+	}
+	if opts.agentMode {
+		return writeJSON(opts.stdout, map[string]any{"updated": true, "previous_version": Version, "version": result.Version, "deferred": result.Deferred}, opts.compact)
 	}
 	if result.Deferred {
 		fmt.Fprintf(opts.stdout, "Downloaded wln %s. Windows will finish the update after this process exits.\n", result.Version)
@@ -164,14 +206,14 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 	switch args[0] {
 	case "list":
 		fs := newCommandFlagSet("profile list", "profile list", opts)
-		format := fs.String("format", "table", "table or json")
+		format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if err := rejectUnexpectedArgs(fs, opts, "profile list"); err != nil {
 			return err
 		}
-		return printProfiles(cfg, *format, opts.stdout, opts.stdout, opts.tableWidth)
+		return printProfiles(cfg, *format, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	case "add":
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			return commandError(opts, "profile add", "profile NAME is required")
@@ -205,6 +247,9 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		}
 		if err := cfg.Save(opts.configPath); err != nil {
 			return err
+		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"ok": true, "profile": name, "default": cfg.DefaultProfile == name, "server": strings.TrimRight(*server, "/")}, opts.compact)
 		}
 		fmt.Fprintf(opts.stdout, "Profile %q saved; token was not printed.\n", name)
 		return nil
@@ -246,6 +291,18 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 			return errors.New("--callback-timeout must be positive")
 		}
 		openLogin := func(target string) error {
+			if opts.agentMode {
+				if err := writeJSON(opts.stderr, map[string]any{"event": "authorization_url", "url": target, "manual": *noOpen}, opts.compact); err != nil {
+					return err
+				}
+				if *noOpen {
+					return nil
+				}
+				if err := openBrowser(target); err != nil {
+					return writeJSON(opts.stderr, map[string]any{"event": "browser_open_failed", "message": err.Error()}, opts.compact)
+				}
+				return nil
+			}
 			fmt.Fprintf(opts.stderr, "Wialon login URL: %s\n", target)
 			if *noOpen {
 				fmt.Fprintln(opts.stderr, "Open the URL manually; waiting for the local callback...")
@@ -284,7 +341,9 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if err := cfg.Save(opts.configPath); err != nil {
 			return err
 		}
-		if result.UserName != "" {
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"ok": true, "profile": name, "default": cfg.DefaultProfile == name, "user": result.UserName, "api_server": result.SDKURL}, opts.compact)
+		} else if result.UserName != "" {
 			fmt.Fprintf(opts.stdout, "Profile %q saved for Wialon user %q.\n", name, result.UserName)
 		} else {
 			fmt.Fprintf(opts.stdout, "Profile %q saved.\n", name)
@@ -301,6 +360,9 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		cfg.DefaultProfile = args[1]
 		if err := cfg.Save(opts.configPath); err != nil {
 			return err
+		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"ok": true, "default_profile": args[1]}, opts.compact)
 		}
 		fmt.Fprintf(opts.stdout, "Default profile: %s\n", args[1])
 		return nil
@@ -320,6 +382,9 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		}
 		if err := cfg.Save(opts.configPath); err != nil {
 			return err
+		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"ok": true, "removed_profile": args[1], "default_profile": cfg.DefaultProfile}, opts.compact)
 		}
 		fmt.Fprintf(opts.stdout, "Profile %q removed.\n", args[1])
 		return nil
@@ -378,7 +443,7 @@ func validateServer(server string, allowHTTP bool) error {
 	return nil
 }
 
-func printProfiles(cfg *config.File, format string, out, notice io.Writer, tableWidth int) error {
+func printProfiles(cfg *config.File, format string, compact bool, out, notice io.Writer, tableWidth int) error {
 	type publicProfile struct {
 		Name      string `json:"name"`
 		Default   bool   `json:"default"`
@@ -392,9 +457,7 @@ func printProfiles(cfg *config.File, format string, out, notice io.Writer, table
 	}
 	switch format {
 	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(profiles)
+		return writeJSON(out, profiles, compact)
 	case "table":
 		rows := make([][]string, 0, len(profiles))
 		for _, p := range profiles {
@@ -418,6 +481,8 @@ func runUnits(ctx context.Context, args []string, opts options) error {
 	switch args[0] {
 	case "list":
 		return runUnitsList(ctx, args[1:], opts)
+	case "get":
+		return runUnitsGet(ctx, args[1:], opts)
 	case "status":
 		return runUnitsStatus(ctx, args[1:], opts)
 	case "device-types":
@@ -436,17 +501,30 @@ func runUnits(ctx context.Context, args []string, opts options) error {
 func runUnitsList(ctx context.Context, args []string, opts options) error {
 	fs := newCommandFlagSet("units list", "units list", opts)
 	search := fs.String("search", "*", "Wialon unit name mask")
-	format := fs.String("format", "table", "table, json, or csv")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table, json, or csv")
+	fields := fs.String("fields", "", "comma-separated JSON fields")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := rejectUnexpectedArgs(fs, opts, "units list"); err != nil {
 		return err
 	}
+	formatName := strings.ToLower(*format)
+	selectedFields, err := parseJSONFields(*fields, unitJSONFields)
+	if err != nil {
+		return err
+	}
+	if len(selectedFields) > 0 && formatName != "json" {
+		return errors.New("--fields requires --format json")
+	}
 	return withClient(ctx, opts, func(client *wialon.Client) error {
 		units, err := client.Units(ctx, *search)
 		if err != nil {
 			return err
+		}
+		needsHardwareNames := formatName != "json" || len(selectedFields) == 0 || slicesContain(selectedFields, "hardware")
+		if !needsHardwareNames {
+			return printUnits(units, formatName, *fields, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 		}
 		hardwareIDs := make([]int64, 0, len(units))
 		for _, unit := range units {
@@ -463,16 +541,31 @@ func runUnitsList(ctx context.Context, args []string, opts options) error {
 				units[i].Hardware = fmt.Sprintf("Unknown (#%d)", units[i].HardwareID)
 			}
 		}
-		return printUnits(units, *format, opts.stdout, opts.stdout, opts.tableWidth)
+		return printUnits(units, formatName, *fields, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
-func printUnits(units []wialon.Unit, format string, out, notice io.Writer, tableWidth int) error {
+func slicesContain(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func printUnits(units []wialon.Unit, format, fields string, compact bool, out, notice io.Writer, tableWidth int) error {
+	format = strings.ToLower(format)
+	if fields != "" && format != "json" {
+		return errors.New("--fields requires --format json")
+	}
 	switch format {
 	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(units)
+		selected, err := selectFieldsFromSlice(units, fields)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, selected, compact)
 	case "csv":
 		w := csv.NewWriter(out)
 		if err := w.Write([]string{"id", "name", "unique_id", "unique_id2", "hardware", "hardware_id"}); err != nil {
@@ -499,6 +592,58 @@ func printUnits(units []wialon.Unit, format string, out, notice io.Writer, table
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+var unitJSONFields = []string{"id", "name", "unique_id", "unique_id2", "hardware", "hardware_id"}
+
+func selectFieldsFromSlice(units []wialon.Unit, fields string) (any, error) {
+	selected, err := parseJSONFields(fields, unitJSONFields)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return units, nil
+	}
+	result := make([]map[string]any, 0, len(units))
+	for _, unit := range units {
+		values := map[string]any{
+			"id": unit.ID, "name": unit.Name, "unique_id": unit.UniqueID,
+			"unique_id2": unit.UniqueID2, "hardware": unit.Hardware, "hardware_id": unit.HardwareID,
+		}
+		row := make(map[string]any, len(selected))
+		for _, field := range selected {
+			row[field] = values[field]
+		}
+		result = append(result, row)
+	}
+	return result, nil
+}
+
+func parseJSONFields(value string, allowed []string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	valid := make(map[string]bool, len(allowed))
+	for _, field := range allowed {
+		valid[field] = true
+	}
+	selected := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(value, ",") {
+		field := strings.TrimSpace(raw)
+		if field == "" {
+			return nil, errors.New("--fields contains an empty field name")
+		}
+		if !valid[field] {
+			return nil, fmt.Errorf("unknown JSON field %q; available fields: %s", field, strings.Join(allowed, ","))
+		}
+		if !seen[field] {
+			selected = append(selected, field)
+			seen[field] = true
+		}
+	}
+	return selected, nil
 }
 
 func runMessages(ctx context.Context, args []string, opts options) error {
@@ -532,7 +677,7 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 	since := fs.String("since", "", "interval start as RFC3339 or local HH:MM")
 	batchSize := fs.Int("batch-size", 10000, "messages per API response")
 	output := fs.String("output", "", "output path; - writes data to stdout")
-	format := fs.String("format", "csv", "csv, json, or ndjson")
+	format := fs.String("format", defaultFormat(opts, "csv", "json"), "csv, json, or ndjson")
 	paramsFilter := fs.String("params", "", "comma-separated message parameters to retain")
 	allTypes := fs.Bool("all-types", false, "include non-telemetry messages")
 	force := fs.Bool("force", false, "replace an existing output file")
@@ -563,6 +708,9 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 			return err
 		}
 		outputPath := *output
+		if opts.agentMode && outputPath == "" {
+			outputPath = "-"
+		}
 		if outputPath == "" {
 			outputPath = defaultMessageOutputFormat(unit, from, *format)
 		}
@@ -573,8 +721,10 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 				return fmt.Errorf("resolve output path: %w", err)
 			}
 		}
-		fmt.Fprintf(opts.stderr, "Unit: %s (id=%d, unique_id=%s)\n", unit.Name, unit.ID, unit.UniqueID)
-		fmt.Fprintf(opts.stderr, "Interval: %s — %s\n", from.Format(time.RFC3339), to.Format(time.RFC3339))
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Unit: %s (id=%d, unique_id=%s)\n", unit.Name, unit.ID, unit.UniqueID)
+			fmt.Fprintf(opts.stderr, "Interval: %s — %s\n", from.Format(time.RFC3339), to.Format(time.RFC3339))
+		}
 
 		spool, err := exportcsv.NewSpool()
 		if err != nil {
@@ -622,9 +772,11 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 				}
 			}
 			index += len(messages)
-			fmt.Fprintf(opts.stderr, "Fetched %d/%d messages\r", index, loaded.Count)
+			if !opts.agentMode {
+				fmt.Fprintf(opts.stderr, "Fetched %d/%d messages\r", index, loaded.Count)
+			}
 		}
-		if loaded.Count > len(loaded.Messages) {
+		if loaded.Count > len(loaded.Messages) && !opts.agentMode {
 			fmt.Fprintln(opts.stderr)
 		}
 		if spool.Rows() != loaded.Count {
@@ -634,10 +786,15 @@ func runMessagesGet(ctx context.Context, args []string, opts options) error {
 			if err := spool.WriteTo(opts.stdout, *format); err != nil {
 				return err
 			}
-			fmt.Fprintf(opts.stderr, "Exported %d messages to stdout.\n", spool.Rows())
+			if !opts.agentMode {
+				fmt.Fprintf(opts.stderr, "Exported %d messages to stdout.\n", spool.Rows())
+			}
 		} else {
 			if err := spool.Write(absOutput, *force, *format); err != nil {
 				return err
+			}
+			if opts.agentMode {
+				return writeJSON(opts.stdout, map[string]any{"ok": true, "count": spool.Rows(), "format": *format, "output": absOutput}, opts.compact)
 			}
 			fmt.Fprintf(opts.stdout, "Exported %d messages to %s\n", spool.Rows(), absOutput)
 		}
@@ -775,13 +932,26 @@ func parseTime(value string) (time.Time, error) {
 }
 
 func resolveUnit(ctx context.Context, client *wialon.Client, ref string) (wialon.Unit, error) {
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if id <= 0 {
+			return wialon.Unit{}, fmt.Errorf("unit ID must be positive, got %q", ref)
+		}
+		unit, err := client.Unit(ctx, id)
+		if err == nil {
+			return unit, nil
+		}
+		var apiErr *wialon.APIError
+		if !errors.Is(err, wialon.ErrUnitNotFound) && !(errors.As(err, &apiErr) && apiErr.Code == 7) {
+			return wialon.Unit{}, err
+		}
+	}
 	units, err := client.Units(ctx, "*")
 	if err != nil {
 		return wialon.Unit{}, err
 	}
 	matches := make([]wialon.Unit, 0, 1)
 	for _, unit := range units {
-		if strconv.FormatInt(unit.ID, 10) == ref || unit.Name == ref || unit.UniqueID == ref || (unit.UniqueID2 != "" && unit.UniqueID2 == ref) {
+		if unit.Name == ref || unit.UniqueID == ref || (unit.UniqueID2 != "" && unit.UniqueID2 == ref) {
 			matches = append(matches, unit)
 		}
 	}
@@ -807,7 +977,7 @@ func runAPI(ctx context.Context, args []string, opts options) error {
 	}
 	fs := newCommandFlagSet("api call", "api call", opts)
 	paramsText := fs.String("params", "{}", "JSON object/array or @file")
-	compact := fs.Bool("compact", false, "emit compact JSON")
+	compact := fs.Bool("compact", opts.compact, "emit compact JSON")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}

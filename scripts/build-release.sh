@@ -28,19 +28,22 @@ for target in "${targets[@]}"; do
   mkdir -p "${target_dir}"
 
   binary_name="wln"
+  agent_binary_name="wlna"
   if [[ "${target_os}" == "windows" ]]; then
     binary_name="wln.exe"
+    agent_binary_name="wlna.exe"
   fi
 
   echo "Building ${target_os}/${target_arch}"
   CGO_ENABLED=0 GOOS="${target_os}" GOARCH="${target_arch}" \
     go build -trimpath -ldflags "${ldflags}" \
     -o "${target_dir}/${binary_name}" "${repository_root}/cmd/wln"
+  cp "${target_dir}/${binary_name}" "${target_dir}/${agent_binary_name}"
 
   if [[ "${target_os}" == "windows" ]]; then
-    (cd "${target_dir}" && zip -q "${dist_dir}/${archive_base}.zip" "${binary_name}")
+    (cd "${target_dir}" && zip -q "${dist_dir}/${archive_base}.zip" "${binary_name}" "${agent_binary_name}")
   else
-    tar -C "${target_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" "${binary_name}"
+    tar -C "${target_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" "${binary_name}" "${agent_binary_name}"
   fi
 done
 

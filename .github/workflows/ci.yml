@@ -28,6 +28,7 @@ jobs:
         run: |
           WLN_INSTALL_DIR="${RUNNER_TEMP}/wln-install" ./install.sh
           "${RUNNER_TEMP}/wln-install/wln" --version
+          test -x "${RUNNER_TEMP}/wln-install/wlna"
 
   windows:
     runs-on: windows-latest
@@ -57,3 +58,4 @@ jobs:
           $env:WLN_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "wln-install"
           & ./install.ps1
           & (Join-Path $env:WLN_INSTALL_DIR "wln.exe") --version
+          if (-not (Test-Path (Join-Path $env:WLN_INSTALL_DIR "wlna.exe"))) { throw "wlna.exe was not installed" }

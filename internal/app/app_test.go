@@ -37,6 +37,8 @@ func TestMessagesGetEndToEndWithPagination(t *testing.T) {
 			_, _ = w.Write([]byte(`{"eid":"test-session"}`))
 		case "core/search_items":
 			_, _ = w.Write([]byte(`{"items":[{"id":1001,"nm":"Test unit","uid":"123456789012345","hw":1}]}`))
+		case "core/search_item":
+			_, _ = w.Write([]byte(`{"item":null}`))
 		case "messages/load_interval":
 			_, _ = w.Write([]byte(`{"count":3,"messages":[` + messageJSON(1, 100) + `,` + messageJSON(2, 101) + `]}`))
 		case "messages/get_messages":
@@ -110,7 +112,7 @@ func TestMessagesGetEndToEndWithPagination(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"token/login", "core/search_items", "messages/load_interval", "messages/get_messages", "messages/unload", "core/logout"}
+	want := []string{"token/login", "core/search_item", "core/search_items", "messages/load_interval", "messages/get_messages", "messages/unload", "core/logout"}
 	if len(services) != len(want) {
 		t.Fatalf("services = %v, want %v", services, want)
 	}

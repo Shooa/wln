@@ -61,10 +61,16 @@ if [ "${actual}" != "${expected}" ]; then
 fi
 
 tar -xzf "${temporary_dir}/${archive}" -C "${temporary_dir}" wln
+if tar -tzf "${temporary_dir}/${archive}" | grep -qx 'wlna'; then
+  tar -xzf "${temporary_dir}/${archive}" -C "${temporary_dir}" wlna
+else
+  cp "${temporary_dir}/wln" "${temporary_dir}/wlna"
+fi
 mkdir -p "${install_dir}"
 install -m 0755 "${temporary_dir}/wln" "${install_dir}/wln"
+install -m 0755 "${temporary_dir}/wlna" "${install_dir}/wlna"
 
-echo "Installed wln ${version} to ${install_dir}/wln"
+echo "Installed wln and wlna ${version} to ${install_dir}"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
   *)

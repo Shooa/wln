@@ -44,12 +44,15 @@ type unitConnection struct {
 	UnitID        int64  `json:"unit_id"`
 	Name          string `json:"name"`
 	UniqueID      string `json:"unique_id"`
+	UniqueID2     string `json:"unique_id2,omitempty"`
 	DeviceType    string `json:"device_type"`
 	DeviceTypeID  int64  `json:"device_type_id"`
 	ServerAddress string `json:"server_address"`
 	TCPPort       string `json:"tcp_port,omitempty"`
 	UDPPort       string `json:"udp_port,omitempty"`
 }
+
+var unitConnectionJSONFields = []string{"unit_id", "name", "unique_id", "unique_id2", "device_type", "device_type_id", "server_address", "tcp_port", "udp_port"}
 
 func (d *flexibleDuration) String() string { return d.Duration.String() }
 
@@ -89,7 +92,7 @@ func parseFlexibleDuration(value string) (time.Duration, error) {
 func runUnitsDeviceTypes(ctx context.Context, args []string, opts options) error {
 	fs := newCommandFlagSet("units device-types", "units device-types", opts)
 	search := fs.String("search", "*", "case-insensitive device type name substring")
-	format := fs.String("format", "table", "table, json, or csv")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table, json, or csv")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -111,16 +114,14 @@ func runUnitsDeviceTypes(ctx context.Context, args []string, opts options) error
 		sort.Slice(filtered, func(i, j int) bool {
 			return strings.ToLower(filtered[i].Name) < strings.ToLower(filtered[j].Name)
 		})
-		return printDeviceTypes(filtered, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+		return printDeviceTypes(filtered, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
-func printDeviceTypes(types []wialon.HardwareType, format string, out, notice io.Writer, tableWidth int) error {
+func printDeviceTypes(types []wialon.HardwareType, format string, compact bool, out, notice io.Writer, tableWidth int) error {
 	switch format {
 	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(types)
+		return writeJSON(out, types, compact)
 	case "csv":
 		w := csv.NewWriter(out)
 		if err := w.Write([]string{"id", "name", "category", "tcp_port", "udp_port", "second_unique_id"}); err != nil {
@@ -156,7 +157,7 @@ func runUnitsConnection(ctx context.Context, args []string, opts options) error 
 	}
 	unitRef, args := args[0], args[1:]
 	fs := newCommandFlagSet("units connection", "units connection", opts)
-	format := fs.String("format", "table", "table or json")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -172,7 +173,45 @@ func runUnitsConnection(ctx context.Context, args []string, opts options) error 
 		if err != nil {
 			return err
 		}
-		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+		return printUnitConnection(connection, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func runUnitsGet(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units get", "UNIT is required")
+	}
+	unitRef, args := args[0], args[1:]
+	fs := newCommandFlagSet("units get", "units get", opts)
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
+	fields := fs.String("fields", "", "comma-separated JSON fields")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units get"); err != nil {
+		return err
+	}
+	selectedFields, err := parseJSONFields(*fields, unitConnectionJSONFields)
+	if err != nil {
+		return err
+	}
+	if len(selectedFields) > 0 && !strings.EqualFold(*format, "json") {
+		return errors.New("--fields requires --format json")
+	}
+	return withClient(ctx, opts, func(client *wialon.Client) error {
+		unit, err := resolveUnit(ctx, client, unitRef)
+		if err != nil {
+			return err
+		}
+		connection := connectionFrom(unit, wialon.HardwareType{ID: unit.HardwareID}, client.SessionInfo().HardwareGatewayIP)
+		needsHardware := len(selectedFields) == 0 || slicesContain(selectedFields, "device_type") || slicesContain(selectedFields, "tcp_port") || slicesContain(selectedFields, "udp_port")
+		if needsHardware {
+			connection, err = connectionForUnit(ctx, client, unit)
+			if err != nil {
+				return err
+			}
+		}
+		return printUnitConnectionFields(connection, strings.ToLower(*format), *fields, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
@@ -186,7 +225,7 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 	fs.Var(&uniqueID, "unique-id", "new primary unique ID")
 	fs.Var(&imei, "imei", "alias for --unique-id")
 	deviceType := fs.String("device-type", "", "new device type ID or exact name")
-	format := fs.String("format", "table", "table or json")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -228,8 +267,10 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(opts.stderr, "Updated unit %s (id=%d).\n", unit.Name, unit.ID)
-		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Updated unit %s (id=%d).\n", unit.Name, unit.ID)
+		}
+		return printUnitConnection(connection, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
@@ -244,7 +285,7 @@ func runUnitsCreate(ctx context.Context, args []string, opts options) error {
 	fs.Var(&imei, "imei", "alias for --unique-id")
 	deviceType := fs.String("device-type", "", "device type ID or exact name")
 	creatorID := fs.Int64("creator-id", 0, "creator user ID; default is the authenticated user")
-	format := fs.String("format", "table", "table or json")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -292,8 +333,10 @@ func runUnitsCreate(ctx context.Context, args []string, opts options) error {
 		}
 		unit.UniqueID, unit.HardwareID = updated.UniqueID, updated.HardwareID
 		connection := connectionFrom(unit, hardware, client.SessionInfo().HardwareGatewayIP)
-		fmt.Fprintf(opts.stderr, "Created unit %s (id=%d).\n", unit.Name, unit.ID)
-		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Created unit %s (id=%d).\n", unit.Name, unit.ID)
+		}
+		return printUnitConnection(connection, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
@@ -366,17 +409,26 @@ func connectionForUnit(ctx context.Context, client *wialon.Client, unit wialon.U
 
 func connectionFrom(unit wialon.Unit, hardware wialon.HardwareType, serverAddress string) unitConnection {
 	return unitConnection{
-		UnitID: unit.ID, Name: unit.Name, UniqueID: unit.UniqueID,
+		UnitID: unit.ID, Name: unit.Name, UniqueID: unit.UniqueID, UniqueID2: unit.UniqueID2,
 		DeviceType: hardware.Name, DeviceTypeID: hardware.ID,
 		ServerAddress: serverAddress, TCPPort: hardware.TCPPort, UDPPort: hardware.UDPPort,
 	}
 }
 
-func printUnitConnection(connection unitConnection, format string, out, notice io.Writer, tableWidth int) error {
+func printUnitConnection(connection unitConnection, format string, compact bool, out, notice io.Writer, tableWidth int) error {
+	return printUnitConnectionFields(connection, format, "", compact, out, notice, tableWidth)
+}
+
+func printUnitConnectionFields(connection unitConnection, format, fields string, compact bool, out, notice io.Writer, tableWidth int) error {
 	if format == "json" {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(connection)
+		selected, err := selectUnitConnectionFields(connection, fields)
+		if err != nil {
+			return err
+		}
+		return writeJSON(out, selected, compact)
+	}
+	if fields != "" {
+		return errors.New("--fields requires --format json")
 	}
 	if format != "table" {
 		return fmt.Errorf("unsupported format %q", format)
@@ -395,6 +447,27 @@ func printUnitConnection(connection unitConnection, format string, out, notice i
 	}}, tableWidth)
 }
 
+func selectUnitConnectionFields(connection unitConnection, fields string) (any, error) {
+	selected, err := parseJSONFields(fields, unitConnectionJSONFields)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return connection, nil
+	}
+	values := map[string]any{
+		"unit_id": connection.UnitID, "name": connection.Name, "unique_id": connection.UniqueID,
+		"unique_id2": connection.UniqueID2, "device_type": connection.DeviceType,
+		"device_type_id": connection.DeviceTypeID, "server_address": connection.ServerAddress,
+		"tcp_port": connection.TCPPort, "udp_port": connection.UDPPort,
+	}
+	result := make(map[string]any, len(selected))
+	for _, field := range selected {
+		result[field] = values[field]
+	}
+	return result, nil
+}
+
 func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 	unitRef := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -409,7 +482,7 @@ func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 	fs.Var(&inactive, "inactive", "show units with no position or message newer than this, e.g. 30d")
 	sortBy := fs.String("sort", "age", "sort by age or name")
 	limit := fs.Int("limit", 0, "maximum rows; 0 means all")
-	format := fs.String("format", "table", "table, json, or csv")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table, json, or csv")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -473,11 +546,11 @@ func runUnitsStatus(ctx context.Context, args []string, opts options) error {
 		if *limit > 0 && len(filtered) > *limit {
 			filtered = filtered[:*limit]
 		}
-		return printUnitStatuses(filtered, *format, now, opts.stdout, opts.stdout, opts.tableWidth)
+		return printUnitStatuses(filtered, *format, opts.compact, now, opts.stdout, opts.stdout, opts.tableWidth)
 	})
 }
 
-func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Time, out, notice io.Writer, tableWidth int) error {
+func printUnitStatuses(statuses []wialon.UnitStatus, format string, compact bool, now time.Time, out, notice io.Writer, tableWidth int) error {
 	for i := range statuses {
 		if statuses[i].Position.Time != 0 {
 			age := now.Sub(time.Unix(statuses[i].Position.Time, 0))
@@ -487,9 +560,7 @@ func printUnitStatuses(statuses []wialon.UnitStatus, format string, now time.Tim
 		}
 	}
 	if format == "json" {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(statuses)
+		return writeJSON(out, statuses, compact)
 	}
 	rows := make([][]string, 0, len(statuses))
 	for _, status := range statuses {
@@ -573,7 +644,7 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	count := fs.Int("n", 20, "number of latest messages")
 	follow := fs.Bool("follow", false, "poll for new messages until interrupted")
 	poll := fs.Duration("poll", 2*time.Second, "poll interval for --follow")
-	format := fs.String("format", "table", "table, json, or ndjson")
+	format := fs.String("format", defaultFormat(opts, "table", "ndjson"), "table, json, or ndjson")
 	allTypes := fs.Bool("all-types", false, "include non-telemetry messages")
 	maxParams := fs.Int("max-params", 100, "maximum parameter characters in table output")
 	fullParams := fs.Bool("full-params", false, "show complete parameters in table output")
@@ -600,7 +671,9 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(opts.stderr, "Unit: %s (id=%d)\n", unit.Name, unit.ID)
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Unit: %s (id=%d)\n", unit.Name, unit.ID)
+		}
 		defer client.UnloadMessages(context.WithoutCancel(ctx))
 		seen := make(map[string]bool)
 		loadAndPrint := func() error {
@@ -622,7 +695,7 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 				if *fullParams {
 					limit = 0
 				}
-				return printTailMessages(fresh, *format, limit, opts.stdout, opts.stdout, opts.tableWidth)
+				return printTailMessages(fresh, *format, limit, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 			}
 			return nil
 		}
@@ -632,7 +705,9 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 		if !*follow {
 			return nil
 		}
-		fmt.Fprintf(opts.stderr, "Following every %s; press Ctrl-C to stop.\n", *poll)
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Following every %s; press Ctrl-C to stop.\n", *poll)
+		}
 		ticker := time.NewTicker(*poll)
 		defer ticker.Stop()
 		for {
@@ -648,12 +723,10 @@ func runMessagesTail(ctx context.Context, args []string, opts options) error {
 	})
 }
 
-func printTailMessages(messages []map[string]any, format string, maxParams int, out, notice io.Writer, tableWidth int) error {
+func printTailMessages(messages []map[string]any, format string, maxParams int, compact bool, out, notice io.Writer, tableWidth int) error {
 	switch format {
 	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(messages)
+		return writeJSON(out, messages, compact)
 	case "ndjson":
 		enc := json.NewEncoder(out)
 		for _, message := range messages {
@@ -791,7 +864,9 @@ func runMessagesExport(ctx context.Context, args []string, opts options) error {
 			}
 			outputPath = fmt.Sprintf("wialon-%s-%s.%s", safeFilenamePart(identifier), from.Format("2006-01-02"), ext)
 		}
-		fmt.Fprintf(opts.stderr, "Unit: %s (id=%d)\nInterval: %s — %s\n", unit.Name, unit.ID, from.Format(time.RFC3339), to.Format(time.RFC3339))
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Unit: %s (id=%d)\nInterval: %s — %s\n", unit.Name, unit.ID, from.Format(time.RFC3339), to.Format(time.RFC3339))
+		}
 		data, _, err := client.Download(ctx, "exchange/export_messages", map[string]any{
 			"itemId": unit.ID, "timeFrom": from.Unix(), "timeTo": to.Unix(), "format": *format, "compress": *compress,
 		})
@@ -808,6 +883,9 @@ func runMessagesExport(ctx context.Context, args []string, opts options) error {
 		}
 		if err := writeAtomic(abs, data, *force); err != nil {
 			return err
+		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{"ok": true, "format": *format, "bytes": len(data), "output": abs}, opts.compact)
 		}
 		fmt.Fprintf(opts.stdout, "Exported %s to %s\n", *format, abs)
 		return nil
@@ -851,7 +929,7 @@ func writeAtomic(path string, data []byte, force bool) error {
 
 func runDoctor(ctx context.Context, args []string, opts options) error {
 	fs := newCommandFlagSet("doctor", "doctor", opts)
-	format := fs.String("format", "table", "table or json")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -874,7 +952,7 @@ func runDoctor(ctx context.Context, args []string, opts options) error {
 	started := time.Now()
 	if err := client.Login(ctx, profile.Token, profile.OperateAs); err != nil {
 		checks = append(checks, doctorCheck{"login", "FAIL", err.Error()})
-		_ = printChecks(checks, *format, opts.stdout, opts.stdout, opts.tableWidth)
+		_ = printChecks(checks, *format, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 		return err
 	}
 	defer client.Logout(context.WithoutCancel(ctx))
@@ -893,14 +971,12 @@ func runDoctor(ctx context.Context, args []string, opts options) error {
 	} else {
 		checks = append(checks, doctorCheck{"units", "OK", fmt.Sprintf("%d accessible", len(units))})
 	}
-	return printChecks(checks, *format, opts.stdout, opts.stdout, opts.tableWidth)
+	return printChecks(checks, *format, opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 }
 
-func printChecks(checks []doctorCheck, format string, out, notice io.Writer, tableWidth int) error {
+func printChecks(checks []doctorCheck, format string, compact bool, out, notice io.Writer, tableWidth int) error {
 	if format == "json" {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(checks)
+		return writeJSON(out, checks, compact)
 	}
 	if format != "table" {
 		return fmt.Errorf("unsupported format %q", format)

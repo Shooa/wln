@@ -102,6 +102,8 @@ func TestDoctorAndTail(t *testing.T) {
 			_, _ = w.Write([]byte(`{"eid":"session","tm":1785850000,"user":{"id":7,"nm":"operator"}}`))
 		case "core/search_items":
 			_, _ = w.Write([]byte(`{"items":[{"id":1,"nm":"Test unit","uid":"123456789012345","hw":42}]}`))
+		case "core/search_item":
+			_, _ = w.Write([]byte(`{"item":{"id":1,"nm":"Test unit","uid":"123456789012345","hw":42}}`))
 		case "messages/load_last":
 			_, _ = w.Write([]byte(`{"count":1,"messages":[{"t":1785850000,"tp":"ud","p":{"value":7}}]}`))
 		case "messages/unload":
@@ -142,6 +144,8 @@ func TestNativeMessageExport(t *testing.T) {
 			_, _ = w.Write([]byte(`{"eid":"session"}`))
 		case "core/search_items":
 			_, _ = w.Write([]byte(`{"items":[{"id":1,"nm":"Test unit","uid":"123456789012345"}]}`))
+		case "core/search_item":
+			_, _ = w.Write([]byte(`{"item":{"id":1,"nm":"Test unit","uid":"123456789012345"}}`))
 		case "exchange/export_messages":
 			w.Header().Set("Content-Type", "application/octet-stream")
 			_, _ = w.Write([]byte("native-data"))
@@ -191,6 +195,8 @@ func TestUnitsConnectivityCommands(t *testing.T) {
 			_, _ = w.Write([]byte(`{"eid":"session","hw_gw_ip":"193.193.165.166","user":{"id":7,"nm":"operator"}}`))
 		case "core/search_items":
 			_, _ = w.Write([]byte(`{"items":[{"id":1001,"nm":"Truck 01","uid":"old-imei","hw":42}]}`))
+		case "core/search_item":
+			_, _ = w.Write([]byte(`{"item":{"id":1001,"nm":"Truck 01","uid":"old-imei","hw":42}}`))
 		case "core/get_hw_types":
 			_, _ = w.Write([]byte(`[
                   {"id":42,"name":"Tracker X","hw_category":"tracker","tp":"20332","up":"20333"},
@@ -280,5 +286,65 @@ func TestExplainConnectivityAccess(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
+	}
+}
+
+func TestAgentUnitsGetUsesCompactJSONAndSkipsUnneededCalls(t *testing.T) {
+	var services []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		service := r.Form.Get("svc")
+		services = append(services, service)
+		switch service {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"session","hw_gw_ip":"193.193.165.166"}`))
+		case "core/search_item":
+			var params map[string]any
+			if err := json.Unmarshal([]byte(r.Form.Get("params")), &params); err != nil {
+				t.Fatal(err)
+			}
+			if params["id"] != float64(1001) || params["flags"] != float64(257) {
+				t.Errorf("search_item params = %#v", params)
+			}
+			_, _ = w.Write([]byte(`{"item":{"id":1001,"nm":"Truck 01","uid":"123456789012345","hw":42}}`))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", service)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	err := RunAgent(context.Background(), []string{
+		"--config", testProfile(t, server.URL), "units", "get", "1001",
+		"--fields", "unit_id,name,unique_id",
+	}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("RunAgent: %v\nstderr: %s", err, errOut.String())
+	}
+	if got, want := out.String(), `{"name":"Truck 01","unique_id":"123456789012345","unit_id":1001}`+"\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+	wantServices := []string{"token/login", "core/search_item", "core/logout"}
+	if fmt.Sprint(services) != fmt.Sprint(wantServices) {
+		t.Fatalf("services = %v, want %v", services, wantServices)
+	}
+}
+
+func TestAgentHelpIsJSON(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if err := RunAgent(context.Background(), []string{"help", "units", "get"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var help map[string]any
+	if err := json.Unmarshal(out.Bytes(), &help); err != nil {
+		t.Fatalf("help is not JSON: %v: %s", err, out.String())
+	}
+	if help["command"] != "units get" || !strings.Contains(help["help"].(string), "--fields") {
+		t.Fatalf("help = %#v", help)
 	}
 }

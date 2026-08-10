@@ -24,7 +24,8 @@ irm https://raw.githubusercontent.com/Shooa/wln/main/install.ps1 | iex
 ```
 
 Both installers detect the operating system and architecture, download the
-latest GitHub release, verify its SHA-256 checksum, and install `wln` in a
+latest GitHub release, verify its SHA-256 checksum, and install `wln` and
+`wlna` in a
 per-user directory. The Unix installer uses `~/.local/bin`; override the target
 on either platform with `WLN_INSTALL_DIR`.
 
@@ -37,8 +38,8 @@ Download the archive for your platform from
 | macOS | `darwin_amd64.tar.gz` | `darwin_arm64.tar.gz` |
 | Windows | `windows_amd64.zip` | `windows_arm64.zip` |
 
-Each release includes `SHA256SUMS`. Extract the archive and put `wln` (or
-`wln.exe`) somewhere on `PATH`.
+Each release includes `SHA256SUMS` and both executable names. Extract the
+archive and put `wln`/`wlna` (or their `.exe` variants) somewhere on `PATH`.
 
 Alternatively, with Go 1.23 or newer:
 
@@ -46,11 +47,15 @@ Alternatively, with Go 1.23 or newer:
 go install github.com/Shooa/wln/cmd/wln@latest
 ```
 
+`go install` installs only the canonical `wln` name. Use the release installer
+or copy that executable to `wlna` to activate agent defaults by invocation name.
+
 For a repository-local binary:
 
 ```sh
 make build
 ./bin/wln --version
+./bin/wlna --version
 ```
 
 ## Built-in help
@@ -75,6 +80,23 @@ includes every interval shortcut instead of returning a shortened usage line.
 `wln help --all` is intended for shell agents and LLMs that have only the
 binary: it includes every command, argument, default, constraint, and example
 in one output.
+
+### Agent mode
+
+`wlna` is the same executable under an agent-oriented name. It selects compact
+JSON by default for command results, version output, help, and errors, disables
+the automatic update prompt, and sends message downloads to stdout unless an
+output file is explicitly requested. Human-friendly `wln` behavior is
+unchanged. Explicit `--format` and `--compact=false` options override defaults.
+
+```sh
+wlna units get 1001
+wlna units get 1001 --fields unit_id,unique_id,device_type,tcp_port
+wlna units list --fields id,name,unique_id
+```
+
+Native `messages export --output -` is the intentional exception: it writes
+the requested binary export bytes to stdout.
 
 ## Updates
 
@@ -187,6 +209,8 @@ wln --profile staging units list
 wln units list
 wln units list --search 'Truck*'
 wln units list --format json
+wln units list --format json --fields id,name,unique_id
+wlna units get 1001
 ```
 
 `--search` is a Wialon **unit-name mask**, not an IMEI search. JSON output uses

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ func bareCommandHelpPath(args []string) []string {
 	switch strings.Join(args, " ") {
 	case "profile", "units", "messages", "api",
 		"profile login", "profile add", "profile use", "profile remove",
-		"units connection", "units create", "units update",
+		"units get", "units connection", "units create", "units update",
 		"messages get", "messages tail", "messages export", "api call":
 		return args
 	default:
@@ -35,14 +36,37 @@ func bareCommandHelpPath(args []string) []string {
 
 func newCommandFlagSet(name, helpKey string, opts options) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(opts.stderr)
-	fs.Usage = func() { _ = printCommandHelp(opts.stderr, strings.Fields(helpKey)) }
+	if opts.agentMode {
+		fs.SetOutput(io.Discard)
+	} else {
+		fs.SetOutput(opts.stderr)
+	}
+	fs.Usage = func() {
+		_ = printCommandHelpForMode(opts.stderr, strings.Fields(helpKey), opts.agentMode, opts.compact)
+	}
 	return fs
 }
 
 func commandError(opts options, helpKey, message string) error {
-	_ = printCommandHelp(opts.stderr, strings.Fields(helpKey))
+	if opts.agentMode {
+		return fmt.Errorf("%s", message)
+	}
+	_ = printCommandHelpForMode(opts.stderr, strings.Fields(helpKey), opts.agentMode, opts.compact)
 	return fmt.Errorf("%s", message)
+}
+
+func printCommandHelpForMode(w io.Writer, path []string, agentMode, compact bool) error {
+	if !agentMode {
+		return printCommandHelp(w, path)
+	}
+	var rendered bytes.Buffer
+	if err := printCommandHelp(&rendered, path); err != nil {
+		return err
+	}
+	return writeJSON(w, map[string]any{
+		"command": strings.Join(path, " "),
+		"help":    strings.TrimSpace(rendered.String()),
+	}, compact)
 }
 
 func rejectUnexpectedArgs(fs *flag.FlagSet, opts options, helpKey string) error {
@@ -66,7 +90,7 @@ func printCommandHelp(w io.Writer, path []string) error {
 }
 
 func printAllHelp(w io.Writer) error {
-	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
+	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w, "\n---"); err != nil {
@@ -100,6 +124,7 @@ GLOBAL OPTIONS
   --timeout DURATION  HTTP timeout (default: 2m)
   --width N           Override detected terminal width for tables
   --wide              Do not fit tables to the terminal width
+  --compact           Emit compact JSON where JSON output is selected
   --version           Print the wln version
 
 HELP
@@ -189,6 +214,7 @@ Equivalent to 'wln doctor' with the selected profile.`,
 
 SUBCOMMANDS
   list    List identity and hardware information
+  get     Get one unit and its device connection settings
   status  Show connectivity, last position, point age, and last message
   device-types  List available device types and their TCP/UDP ports
   connection    Show the settings needed to connect a device
@@ -200,15 +226,35 @@ Run 'wln help units SUBCOMMAND' for details.`,
 	"units list": `wln units list — list accessible units
 
 USAGE
-  wln units list [--search MASK] [--format table|json|csv]
+  wln units list [--search MASK] [--format table|json|csv] [--fields LIST]
 
 OPTIONS
   --search MASK   Wialon unit-name mask (default: *)
   --format VALUE  table, json, or csv (default: table)
+  --fields LIST   Comma-separated JSON fields; requires --format json
 
 EXAMPLES
   wln units list
   wln units list --search 'Truck*' --format json`,
+
+	"units get": `wln units get — get one unit and device connection settings
+
+USAGE
+  wln units get UNIT [--format table|json] [--fields LIST]
+
+OPTIONS
+  --format VALUE  table or json (default: table; wlna: json)
+  --fields LIST   Comma-separated JSON fields; requires --format json
+
+JSON FIELDS
+  unit_id,name,unique_id,unique_id2,device_type,device_type_id,
+  server_address,tcp_port,udp_port
+
+For a numeric Wialon ID this uses a direct item lookup instead of listing all
+units. Exact unit names and unique IDs/IMEIs are also accepted.
+
+EXAMPLE
+  wlna units get 1001 --fields unit_id,unique_id,device_type,tcp_port`,
 
 	"units status": `wln units status — inspect last activity and position age
 
