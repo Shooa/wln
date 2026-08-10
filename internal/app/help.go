@@ -25,6 +25,7 @@ func bareCommandHelpPath(args []string) []string {
 	switch strings.Join(args, " ") {
 	case "profile", "units", "messages", "api",
 		"profile login", "profile add", "profile use", "profile remove",
+		"units connection", "units create", "units update",
 		"messages get", "messages tail", "messages export", "api call":
 		return args
 	default:
@@ -65,7 +66,7 @@ func printCommandHelp(w io.Writer, path []string) error {
 }
 
 func printAllHelp(w io.Writer) error {
-	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units status", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
+	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w, "\n---"); err != nil {
@@ -184,11 +185,15 @@ USAGE
 
 Equivalent to 'wln doctor' with the selected profile.`,
 
-	"units": `wln units — inspect accessible Wialon units
+	"units": `wln units — inspect and manage Wialon units
 
 SUBCOMMANDS
   list    List identity and hardware information
   status  Show connectivity, last position, point age, and last message
+  device-types  List available device types and their TCP/UDP ports
+  connection    Show the settings needed to connect a device
+  create        Create a unit and assign its device type and unique ID
+  update        Change a unit's device type and/or unique ID
 
 Run 'wln help units SUBCOMMAND' for details.`,
 
@@ -225,6 +230,69 @@ EXAMPLES
 
 Use --inactive rather than --stale when selecting an unused unit: a unit may
 have no recent GPS point while still sending current non-position messages.`,
+
+	"units device-types": `wln units device-types — list available hardware types
+
+USAGE
+  wln units device-types [--search TEXT] [--format table|json|csv]
+
+OPTIONS
+  --search TEXT   Case-insensitive name substring (default: *)
+  --format VALUE  table, json, or csv (default: table)
+
+The result includes the numeric device type ID and its TCP/UDP ports.
+
+EXAMPLES
+  wln units device-types --search Teltonika
+  wln units device-types --format json`,
+
+	"units connection": `wln units connection — show device connection settings
+
+USAGE
+  wln units connection UNIT [--format table|json]
+
+Shows the unit's unique ID, device type, Wialon hardware gateway address, and
+the TCP/UDP ports advertised for that device type.
+
+EXAMPLES
+  wln units connection 1001
+  wln units connection 123456789012345 --format json`,
+
+	"units create": `wln units create — create a Wialon unit
+
+USAGE
+  wln units create NAME --device-type TYPE (--unique-id ID | --imei IMEI) [OPTIONS]
+
+OPTIONS
+  --device-type TYPE  Numeric device type ID or exact name
+  --unique-id ID      Primary device unique ID
+  --imei IMEI         Alias for --unique-id
+  --creator-id ID     Creator user ID; default is the authenticated user
+  --format VALUE      table or json (default: table)
+
+Wialon creates the object first and assigns its unique ID in a second API call.
+If the second call fails, the error reports the ID of the object already created.
+Editing the unique ID requires a token created with --access 4864 and the
+Edit connectivity settings right to the unit.
+
+EXAMPLE
+  wln units create "Truck 01" --device-type "Teltonika FMB920" --imei 123456789012345`,
+
+	"units update": `wln units update — change device connectivity identity
+
+USAGE
+  wln units update UNIT [--device-type TYPE] [--unique-id ID | --imei IMEI]
+                        [--format table|json]
+
+At least one changed value is required. An omitted value is preserved. Wialon
+applies the device type and primary unique ID together in one API operation.
+This requires a token created with --access 4864 and the Edit connectivity
+settings right to the unit.
+
+EXAMPLES
+  wln units update 1001 --imei 123456789012345
+  wln units update 1001 --device-type "Teltonika FMB920"
+  wln units update 1001 --device-type 123 --unique-id 123456789012345`,
 
 	"messages": `wln messages — retrieve Wialon messages
 

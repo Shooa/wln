@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.7.2"
+var Version = "0.8.0"
 
 var openBrowser = browseropen.Open
 
@@ -420,6 +420,14 @@ func runUnits(ctx context.Context, args []string, opts options) error {
 		return runUnitsList(ctx, args[1:], opts)
 	case "status":
 		return runUnitsStatus(ctx, args[1:], opts)
+	case "device-types":
+		return runUnitsDeviceTypes(ctx, args[1:], opts)
+	case "connection":
+		return runUnitsConnection(ctx, args[1:], opts)
+	case "create":
+		return runUnitsCreate(ctx, args[1:], opts)
+	case "update":
+		return runUnitsUpdate(ctx, args[1:], opts)
 	default:
 		return commandError(opts, "units", fmt.Sprintf("unknown units subcommand %q", args[0]))
 	}

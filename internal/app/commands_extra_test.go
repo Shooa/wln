@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Shooa/wln/internal/config"
+	"github.com/Shooa/wln/internal/wialon"
 )
 
 func testProfile(t *testing.T, server string) string {
@@ -173,5 +175,110 @@ func TestTruncateRunes(t *testing.T) {
 	}
 	if got := truncateRunes("complete", 0); got != "complete" {
 		t.Fatalf("unlimited = %q", got)
+	}
+}
+
+func TestUnitsConnectivityCommands(t *testing.T) {
+	var createParams, updateParams map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		var params map[string]any
+		if raw := r.Form.Get("params"); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &params)
+		}
+		switch r.Form.Get("svc") {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"session","hw_gw_ip":"193.193.165.166","user":{"id":7,"nm":"operator"}}`))
+		case "core/search_items":
+			_, _ = w.Write([]byte(`{"items":[{"id":1001,"nm":"Truck 01","uid":"old-imei","hw":42}]}`))
+		case "core/get_hw_types":
+			_, _ = w.Write([]byte(`[
+                  {"id":42,"name":"Tracker X","hw_category":"tracker","tp":"20332","up":"20333"},
+                  {"id":43,"name":"Mobile App","hw_category":"mobile","tp":"","up":""}
+                ]`))
+		case "core/create_unit":
+			createParams = params
+			_, _ = w.Write([]byte(`{"item":{"id":1002,"nm":"Truck 02","hw":42},"flags":257}`))
+		case "unit/update_device_type":
+			updateParams = params
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"uid":%q,"hw":42}`, params["uniqueId"])))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	}))
+	defer server.Close()
+	configPath := testProfile(t, server.URL)
+
+	t.Run("device types", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "device-types", "--search", "tracker", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		var types []map[string]any
+		if err := json.Unmarshal(out.Bytes(), &types); err != nil {
+			t.Fatal(err)
+		}
+		if len(types) != 1 || types[0]["name"] != "Tracker X" || types[0]["tcp_port"] != "20332" {
+			t.Fatalf("types = %#v", types)
+		}
+	})
+
+	t.Run("connection", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "connection", "1001", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		var connection unitConnection
+		if err := json.Unmarshal(out.Bytes(), &connection); err != nil {
+			t.Fatal(err)
+		}
+		if connection.UniqueID != "old-imei" || connection.DeviceType != "Tracker X" || connection.ServerAddress != "193.193.165.166" || connection.TCPPort != "20332" || connection.UDPPort != "20333" {
+			t.Fatalf("connection = %#v", connection)
+		}
+	})
+
+	t.Run("create", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "create", "Truck 02", "--device-type", "Tracker X", "--imei", "new-imei", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		if createParams["creatorId"] != float64(7) || createParams["hwTypeId"] != float64(42) || createParams["name"] != "Truck 02" {
+			t.Fatalf("create params = %#v", createParams)
+		}
+		if updateParams["itemId"] != float64(1002) || updateParams["uniqueId"] != "new-imei" {
+			t.Fatalf("update params = %#v", updateParams)
+		}
+		var connection unitConnection
+		if err := json.Unmarshal(out.Bytes(), &connection); err != nil {
+			t.Fatal(err)
+		}
+		if connection.UnitID != 1002 || connection.UniqueID != "new-imei" {
+			t.Fatalf("connection = %#v", connection)
+		}
+	})
+
+	t.Run("update preserves device type", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "update", "1001", "--imei", "replacement-imei", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		if updateParams["itemId"] != float64(1001) || updateParams["deviceTypeId"] != float64(42) || updateParams["uniqueId"] != "replacement-imei" {
+			t.Fatalf("update params = %#v", updateParams)
+		}
+	})
+}
+
+func TestExplainConnectivityAccess(t *testing.T) {
+	err := explainConnectivityAccess(&wialon.APIError{Code: 7})
+	for _, want := range []string{"--access 4864", "Edit connectivity settings"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
 	}
 }

@@ -27,6 +27,30 @@ type doctorCheck struct {
 
 type flexibleDuration struct{ time.Duration }
 
+type optionalString struct {
+	value string
+	set   bool
+}
+
+func (s *optionalString) String() string { return s.value }
+
+func (s *optionalString) Set(value string) error {
+	s.value = value
+	s.set = true
+	return nil
+}
+
+type unitConnection struct {
+	UnitID        int64  `json:"unit_id"`
+	Name          string `json:"name"`
+	UniqueID      string `json:"unique_id"`
+	DeviceType    string `json:"device_type"`
+	DeviceTypeID  int64  `json:"device_type_id"`
+	ServerAddress string `json:"server_address"`
+	TCPPort       string `json:"tcp_port,omitempty"`
+	UDPPort       string `json:"udp_port,omitempty"`
+}
+
 func (d *flexibleDuration) String() string { return d.Duration.String() }
 
 func (d *flexibleDuration) Set(value string) error {
@@ -60,6 +84,315 @@ func parseFlexibleDuration(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid duration %q: %w", value, err)
 	}
 	return parsed, nil
+}
+
+func runUnitsDeviceTypes(ctx context.Context, args []string, opts options) error {
+	fs := newCommandFlagSet("units device-types", "units device-types", opts)
+	search := fs.String("search", "*", "case-insensitive device type name substring")
+	format := fs.String("format", "table", "table, json, or csv")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units device-types"); err != nil {
+		return err
+	}
+	return withClient(ctx, opts, func(client *wialon.Client) error {
+		types, err := client.DeviceTypes(ctx)
+		if err != nil {
+			return err
+		}
+		needle := strings.ToLower(strings.TrimSpace(*search))
+		filtered := types[:0]
+		for _, hardware := range types {
+			if needle == "" || needle == "*" || strings.Contains(strings.ToLower(hardware.Name), needle) {
+				filtered = append(filtered, hardware)
+			}
+		}
+		sort.Slice(filtered, func(i, j int) bool {
+			return strings.ToLower(filtered[i].Name) < strings.ToLower(filtered[j].Name)
+		})
+		return printDeviceTypes(filtered, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func printDeviceTypes(types []wialon.HardwareType, format string, out, notice io.Writer, tableWidth int) error {
+	switch format {
+	case "json":
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(types)
+	case "csv":
+		w := csv.NewWriter(out)
+		if err := w.Write([]string{"id", "name", "category", "tcp_port", "udp_port", "second_unique_id"}); err != nil {
+			return err
+		}
+		for _, hardware := range types {
+			if err := w.Write([]string{strconv.FormatInt(hardware.ID, 10), hardware.Name, hardware.Category, hardware.TCPPort, hardware.UDPPort, strconv.FormatBool(hardware.SecondUniqueID)}); err != nil {
+				return err
+			}
+		}
+		w.Flush()
+		return w.Error()
+	case "table":
+		rows := make([][]string, 0, len(types))
+		for _, hardware := range types {
+			rows = append(rows, []string{strconv.FormatInt(hardware.ID, 10), hardware.Name, hardware.Category, hardware.TCPPort, hardware.UDPPort})
+		}
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "ID", MinWidth: 7},
+			{Header: "DEVICE TYPE", MinWidth: 18},
+			{Header: "CATEGORY", MinWidth: 9, HidePriority: 1},
+			{Header: "TCP PORT", MinWidth: 8},
+			{Header: "UDP PORT", MinWidth: 8},
+		}, rows, tableWidth)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func runUnitsConnection(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units connection", "UNIT is required")
+	}
+	unitRef, args := args[0], args[1:]
+	fs := newCommandFlagSet("units connection", "units connection", opts)
+	format := fs.String("format", "table", "table or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units connection"); err != nil {
+		return err
+	}
+	return withClient(ctx, opts, func(client *wialon.Client) error {
+		unit, err := resolveUnit(ctx, client, unitRef)
+		if err != nil {
+			return err
+		}
+		connection, err := connectionForUnit(ctx, client, unit)
+		if err != nil {
+			return err
+		}
+		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units update", "UNIT is required")
+	}
+	unitRef, args := args[0], args[1:]
+	fs := newCommandFlagSet("units update", "units update", opts)
+	var uniqueID, imei optionalString
+	fs.Var(&uniqueID, "unique-id", "new primary unique ID")
+	fs.Var(&imei, "imei", "alias for --unique-id")
+	deviceType := fs.String("device-type", "", "new device type ID or exact name")
+	format := fs.String("format", "table", "table or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units update"); err != nil {
+		return err
+	}
+	newUniqueID, uniqueIDSet, err := selectedUniqueID(uniqueID, imei)
+	if err != nil {
+		return err
+	}
+	if uniqueIDSet && len([]rune(newUniqueID)) > 100 {
+		return errors.New("--unique-id/--imei must not exceed 100 characters")
+	}
+	if !uniqueIDSet && strings.TrimSpace(*deviceType) == "" {
+		return errors.New("at least one of --unique-id/--imei or --device-type is required")
+	}
+	return withClient(ctx, opts, func(client *wialon.Client) error {
+		unit, err := resolveUnit(ctx, client, unitRef)
+		if err != nil {
+			return err
+		}
+		hardwareID := unit.HardwareID
+		if strings.TrimSpace(*deviceType) != "" {
+			hardware, err := resolveDeviceType(ctx, client, *deviceType)
+			if err != nil {
+				return err
+			}
+			hardwareID = hardware.ID
+		}
+		if !uniqueIDSet {
+			newUniqueID = unit.UniqueID
+		}
+		updated, err := client.UpdateDeviceType(ctx, unit.ID, hardwareID, newUniqueID)
+		if err != nil {
+			return explainConnectivityAccess(err)
+		}
+		unit.UniqueID, unit.HardwareID = updated.UniqueID, updated.HardwareID
+		connection, err := connectionForUnit(ctx, client, unit)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(opts.stderr, "Updated unit %s (id=%d).\n", unit.Name, unit.ID)
+		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func runUnitsCreate(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units create", "NAME is required")
+	}
+	name, args := args[0], args[1:]
+	fs := newCommandFlagSet("units create", "units create", opts)
+	var uniqueID, imei optionalString
+	fs.Var(&uniqueID, "unique-id", "primary unique ID")
+	fs.Var(&imei, "imei", "alias for --unique-id")
+	deviceType := fs.String("device-type", "", "device type ID or exact name")
+	creatorID := fs.Int64("creator-id", 0, "creator user ID; default is the authenticated user")
+	format := fs.String("format", "table", "table or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units create"); err != nil {
+		return err
+	}
+	if count := len([]rune(name)); count < 4 || count > 50 {
+		return errors.New("NAME must contain between 4 and 50 characters")
+	}
+	newUniqueID, uniqueIDSet, err := selectedUniqueID(uniqueID, imei)
+	if err != nil {
+		return err
+	}
+	if uniqueIDSet && len([]rune(newUniqueID)) > 100 {
+		return errors.New("--unique-id/--imei must not exceed 100 characters")
+	}
+	if !uniqueIDSet || newUniqueID == "" {
+		return errors.New("--unique-id or --imei is required and must not be empty")
+	}
+	if strings.TrimSpace(*deviceType) == "" {
+		return errors.New("--device-type is required")
+	}
+	if *creatorID < 0 {
+		return errors.New("--creator-id must not be negative")
+	}
+	return withClient(ctx, opts, func(client *wialon.Client) error {
+		hardware, err := resolveDeviceType(ctx, client, *deviceType)
+		if err != nil {
+			return err
+		}
+		creator := *creatorID
+		if creator == 0 {
+			creator = client.SessionInfo().UserID
+		}
+		if creator == 0 {
+			return errors.New("Wialon returned no authenticated user ID; specify --creator-id")
+		}
+		unit, err := client.CreateUnit(ctx, creator, name, hardware.ID)
+		if err != nil {
+			return err
+		}
+		updated, err := client.UpdateDeviceType(ctx, unit.ID, hardware.ID, newUniqueID)
+		if err != nil {
+			return fmt.Errorf("unit %q was created with id=%d, but setting its unique ID failed: %w", unit.Name, unit.ID, explainConnectivityAccess(err))
+		}
+		unit.UniqueID, unit.HardwareID = updated.UniqueID, updated.HardwareID
+		connection := connectionFrom(unit, hardware, client.SessionInfo().HardwareGatewayIP)
+		fmt.Fprintf(opts.stderr, "Created unit %s (id=%d).\n", unit.Name, unit.ID)
+		return printUnitConnection(connection, strings.ToLower(*format), opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func selectedUniqueID(uniqueID, imei optionalString) (string, bool, error) {
+	if uniqueID.set && imei.set {
+		return "", false, errors.New("use only one of --unique-id or --imei")
+	}
+	if uniqueID.set {
+		return uniqueID.value, true, nil
+	}
+	if imei.set {
+		return imei.value, true, nil
+	}
+	return "", false, nil
+}
+
+func explainConnectivityAccess(err error) error {
+	var apiErr *wialon.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == 7 {
+		return fmt.Errorf("%w; ensure the profile token was authorized with --access 4864 and the user has the Edit connectivity settings right to this unit", err)
+	}
+	return err
+}
+
+func resolveDeviceType(ctx context.Context, client *wialon.Client, ref string) (wialon.HardwareType, error) {
+	ref = strings.TrimSpace(ref)
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		if id <= 0 {
+			return wialon.HardwareType{}, fmt.Errorf("device type ID must be positive, got %q", ref)
+		}
+		types, err := client.HardwareTypes(ctx, []int64{id})
+		if err != nil {
+			return wialon.HardwareType{}, err
+		}
+		if hardware, ok := types[id]; ok {
+			return hardware, nil
+		}
+		return wialon.HardwareType{}, fmt.Errorf("device type ID %d is not available", id)
+	}
+	types, err := client.DeviceTypes(ctx)
+	if err != nil {
+		return wialon.HardwareType{}, err
+	}
+	matches := make([]wialon.HardwareType, 0, 1)
+	for _, hardware := range types {
+		if strings.EqualFold(hardware.Name, ref) {
+			matches = append(matches, hardware)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return wialon.HardwareType{}, fmt.Errorf("device type name %q is ambiguous; use its numeric ID", ref)
+	}
+	return wialon.HardwareType{}, fmt.Errorf("device type %q is not available; run 'wln units device-types --search %q'", ref, ref)
+}
+
+func connectionForUnit(ctx context.Context, client *wialon.Client, unit wialon.Unit) (unitConnection, error) {
+	types, err := client.HardwareTypes(ctx, []int64{unit.HardwareID})
+	if err != nil {
+		return unitConnection{}, err
+	}
+	hardware, ok := types[unit.HardwareID]
+	if !ok {
+		return unitConnection{}, fmt.Errorf("device type ID %d for unit %q is not available", unit.HardwareID, unit.Name)
+	}
+	return connectionFrom(unit, hardware, client.SessionInfo().HardwareGatewayIP), nil
+}
+
+func connectionFrom(unit wialon.Unit, hardware wialon.HardwareType, serverAddress string) unitConnection {
+	return unitConnection{
+		UnitID: unit.ID, Name: unit.Name, UniqueID: unit.UniqueID,
+		DeviceType: hardware.Name, DeviceTypeID: hardware.ID,
+		ServerAddress: serverAddress, TCPPort: hardware.TCPPort, UDPPort: hardware.UDPPort,
+	}
+}
+
+func printUnitConnection(connection unitConnection, format string, out, notice io.Writer, tableWidth int) error {
+	if format == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(connection)
+	}
+	if format != "table" {
+		return fmt.Errorf("unsupported format %q", format)
+	}
+	return texttable.WriteAdaptive(out, notice, []texttable.Column{
+		{Header: "ID", MinWidth: 8, HidePriority: 2},
+		{Header: "NAME", MinWidth: 12},
+		{Header: "UNIQUE ID", MinWidth: 15},
+		{Header: "DEVICE TYPE", MinWidth: 14},
+		{Header: "SERVER", MinWidth: 13},
+		{Header: "TCP PORT", MinWidth: 8},
+		{Header: "UDP PORT", MinWidth: 8, HidePriority: 1},
+	}, [][]string{{
+		strconv.FormatInt(connection.UnitID, 10), connection.Name, connection.UniqueID,
+		connection.DeviceType, connection.ServerAddress, connection.TCPPort, connection.UDPPort,
+	}}, tableWidth)
 }
 
 func runUnitsStatus(ctx context.Context, args []string, opts options) error {

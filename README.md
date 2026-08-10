@@ -1,8 +1,10 @@
 # wln
 
 `wln` is a small, deterministic CLI for exporting telemetry from Wialon Hosting
-or Wialon Local to analysis-ready CSV. It also provides profile management,
-unit discovery, and authenticated access to arbitrary Remote API services.
+or Wialon Local to analysis-ready CSV. It provides profile management, unit
+discovery, authenticated access to arbitrary Remote API services, unit
+creation, connectivity identity editing, and the server/port data needed to
+connect a tracker.
 
 The implementation is written in Go and talks to Wialon only through the
 documented Remote API. It never prints access tokens or session IDs.
@@ -116,9 +118,20 @@ automatically stores `hst-api.wialon.com`. Wialon Local falls back to the same
 installation base address.
 
 The default access value is `768` (`0x100 + 0x200`): online/message access plus
-viewing connectivity properties such as the unit unique ID. The default token
-duration is unlimited (`0`), though Wialon removes tokens after 100 days of
-inactivity. Useful options:
+viewing connectivity properties such as the unit unique ID. Wialon groups
+editing connectivity settings into the broad `0x1000` critical-data scope,
+which also includes destructive rights, so `wln` does not request it by
+default. Explicitly authorize a write-capable profile when needed:
+
+```sh
+wln profile login editor \
+  --server https://hosting.wialon.com \
+  --access 4864
+```
+
+The authenticated user must also have the **Edit connectivity settings** right
+to the unit. The default token duration is unlimited (`0`), though Wialon
+removes tokens after 100 days of inactivity. Useful options:
 
 ```sh
 wln profile login local \
@@ -201,6 +214,49 @@ JSON retains both the readable name and raw Wialon ID:
   }
 ]
 ```
+
+### Device types and connection settings
+
+Find the exact device type and its numeric Wialon ID:
+
+```sh
+wln units device-types --search Teltonika
+wln units device-types --search Teltonika --format json
+```
+
+Show everything needed to point an existing tracker to Wialon: primary unique
+ID, device type, hardware gateway address, and the type's TCP/UDP ports:
+
+```sh
+wln units connection 1001
+wln units connection 123456789012345 --format json
+```
+
+The gateway address comes from `hw_gw_ip` in the authenticated `token/login`
+response. Ports come from `core/get_hw_types`. An empty TCP or UDP port means
+that the device type does not advertise that transport through the API.
+
+### Create or update a unit
+
+The device type accepts either the numeric ID printed by `device-types` or its
+exact name. `--imei` is an alias for Wialon's primary `--unique-id` field:
+
+```sh
+wln units create "Truck 02" \
+  --device-type "Teltonika FMB920" \
+  --imei 123456789012345
+
+wln units update 1001 --imei 987654321098765
+wln units update 1001 --device-type "Teltonika FMB920"
+wln units update 1001 --device-type 123 --unique-id 987654321098765
+```
+
+For updates, an omitted value is preserved. Wialon applies the device type and
+primary unique ID together through `unit/update_device_type`. Creation requires
+two documented API calls: `core/create_unit`, followed by
+`unit/update_device_type` to assign the unique ID. If the second call fails,
+`wln` reports the ID of the unit that was already created instead of hiding the
+partial result.
 
 ### Unit status and stale positions
 
@@ -383,6 +439,8 @@ follow their positional argument, matching the examples above.
 - [`token/login`](https://help.wialon.com/en/api/user-guide/api-reference/token/login)
 - [`core/search_items`](https://help.wialon.com/en/api/user-guide/api-reference/core/search_items)
 - [`core/get_hw_types`](https://help.wialon.com/en/api/user-guide/api-reference/core/get_hw_types)
+- [`core/create_unit`](https://help.wialon.com/en/api/user-guide/api-reference/core/create_unit)
+- [`unit/update_device_type`](https://help.wialon.com/en/api/user-guide/api-reference/unit/update_device_type)
 - [`messages/load_interval`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_interval)
 - [`messages/load_last`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_last)
 - [`messages/get_messages`](https://help.wialon.com/en/api/user-guide/api-reference/messages/get_messages)

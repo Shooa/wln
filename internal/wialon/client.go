@@ -15,7 +15,7 @@ import (
 
 const maxResponseBytes = 512 << 20
 
-var Version = "0.7.2"
+var Version = "0.8.0"
 
 type Client struct {
 	endpoint string
@@ -25,9 +25,10 @@ type Client struct {
 }
 
 type SessionInfo struct {
-	UserID     int64  `json:"user_id,omitempty"`
-	UserName   string `json:"user_name,omitempty"`
-	ServerTime int64  `json:"server_time,omitempty"`
+	UserID            int64  `json:"user_id,omitempty"`
+	UserName          string `json:"user_name,omitempty"`
+	ServerTime        int64  `json:"server_time,omitempty"`
+	HardwareGatewayIP string `json:"hardware_gateway_ip,omitempty"`
 }
 
 type APIError struct {
@@ -55,6 +56,7 @@ var errorText = map[int]string{
 	9:    "authorization server unavailable",
 	10:   "concurrent request limit reached",
 	1001: "no messages for the selected interval",
+	1002: "an item with the specified property already exists",
 	1003: "request or service limit reached",
 	1004: "message limit exceeded",
 	1005: "execution time limit exceeded",
@@ -100,9 +102,10 @@ func (c *Client) Login(ctx context.Context, token, operateAs string) error {
 		params["operateAs"] = operateAs
 	}
 	var response struct {
-		EID  string `json:"eid"`
-		Time int64  `json:"tm"`
-		User struct {
+		EID               string `json:"eid"`
+		Time              int64  `json:"tm"`
+		HardwareGatewayIP string `json:"hw_gw_ip"`
+		User              struct {
 			ID   int64  `json:"id"`
 			Name string `json:"nm"`
 		} `json:"user"`
@@ -114,7 +117,10 @@ func (c *Client) Login(ctx context.Context, token, operateAs string) error {
 		return errors.New("login: Wialon returned no session ID")
 	}
 	c.sid = response.EID
-	c.info = SessionInfo{UserID: response.User.ID, UserName: response.User.Name, ServerTime: response.Time}
+	c.info = SessionInfo{
+		UserID: response.User.ID, UserName: response.User.Name, ServerTime: response.Time,
+		HardwareGatewayIP: response.HardwareGatewayIP,
+	}
 	return nil
 }
 
@@ -325,9 +331,12 @@ func connectionValue(raw json.RawMessage) bool {
 }
 
 type HardwareType struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Category string `json:"category,omitempty"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Category       string `json:"category,omitempty"`
+	TCPPort        string `json:"tcp_port,omitempty"`
+	UDPPort        string `json:"udp_port,omitempty"`
+	SecondUniqueID bool   `json:"second_unique_id,omitempty"`
 }
 
 func (c *Client) HardwareTypes(ctx context.Context, ids []int64) (map[int64]HardwareType, error) {
@@ -343,25 +352,95 @@ func (c *Client) HardwareTypes(ctx context.Context, ids []int64) (map[int64]Hard
 	if len(unique) == 0 {
 		return map[int64]HardwareType{}, nil
 	}
-	params := map[string]any{
+	hardwareTypes, err := c.hardwareTypes(ctx, map[string]any{
 		"filterType":   "id",
 		"filterValue":  unique,
 		"includeType":  true,
 		"ignoreRename": false,
+	})
+	if err != nil {
+		return nil, err
 	}
+	result := make(map[int64]HardwareType, len(hardwareTypes))
+	for _, hardware := range hardwareTypes {
+		result[hardware.ID] = hardware
+	}
+	return result, nil
+}
+
+// DeviceTypes returns all hardware types available to the authenticated user.
+func (c *Client) DeviceTypes(ctx context.Context) ([]HardwareType, error) {
+	return c.hardwareTypes(ctx, map[string]any{"includeType": true, "ignoreRename": false})
+}
+
+func (c *Client) hardwareTypes(ctx context.Context, params map[string]any) ([]HardwareType, error) {
 	var response []struct {
-		ID       int64  `json:"id"`
-		Name     string `json:"name"`
-		Category string `json:"hw_category"`
+		ID             int64  `json:"id"`
+		Name           string `json:"name"`
+		Category       string `json:"hw_category"`
+		TCPPort        string `json:"tp"`
+		UDPPort        string `json:"up"`
+		SecondUniqueID int    `json:"uid2"`
 	}
 	if err := c.Call(ctx, "core/get_hw_types", params, &response); err != nil {
 		return nil, fmt.Errorf("get hardware types: %w", err)
 	}
-	result := make(map[int64]HardwareType, len(response))
+	result := make([]HardwareType, 0, len(response))
 	for _, hardware := range response {
-		result[hardware.ID] = HardwareType{ID: hardware.ID, Name: hardware.Name, Category: hardware.Category}
+		result = append(result, HardwareType{
+			ID: hardware.ID, Name: strings.TrimSpace(hardware.Name), Category: strings.TrimSpace(hardware.Category),
+			TCPPort: usablePort(hardware.TCPPort), UDPPort: usablePort(hardware.UDPPort), SecondUniqueID: hardware.SecondUniqueID != 0,
+		})
 	}
 	return result, nil
+}
+
+func usablePort(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "0" {
+		return ""
+	}
+	return port
+}
+
+func (c *Client) CreateUnit(ctx context.Context, creatorID int64, name string, hardwareID int64) (Unit, error) {
+	params := map[string]any{
+		"creatorId": creatorID,
+		"name":      name,
+		"hwTypeId":  hardwareID,
+		"dataFlags": 257,
+	}
+	var response struct {
+		Item struct {
+			ID   int64  `json:"id"`
+			Name string `json:"nm"`
+			UID  string `json:"uid"`
+			UID2 string `json:"uid2"`
+			HW   int64  `json:"hw"`
+		} `json:"item"`
+	}
+	if err := c.Call(ctx, "core/create_unit", params, &response); err != nil {
+		return Unit{}, fmt.Errorf("create unit: %w", err)
+	}
+	if response.Item.ID == 0 {
+		return Unit{}, errors.New("create unit: Wialon returned no unit ID")
+	}
+	return Unit{
+		ID: response.Item.ID, Name: response.Item.Name, UniqueID: response.Item.UID,
+		UniqueID2: response.Item.UID2, HardwareID: response.Item.HW,
+	}, nil
+}
+
+func (c *Client) UpdateDeviceType(ctx context.Context, unitID, hardwareID int64, uniqueID string) (Unit, error) {
+	params := map[string]any{"itemId": unitID, "deviceTypeId": hardwareID, "uniqueId": uniqueID}
+	var response struct {
+		UID string `json:"uid"`
+		HW  int64  `json:"hw"`
+	}
+	if err := c.Call(ctx, "unit/update_device_type", params, &response); err != nil {
+		return Unit{}, fmt.Errorf("update unit device type and unique ID: %w", err)
+	}
+	return Unit{ID: unitID, UniqueID: response.UID, HardwareID: response.HW}, nil
 }
 
 type LoadResult struct {
