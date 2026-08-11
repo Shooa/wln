@@ -15,7 +15,7 @@ import (
 
 const maxResponseBytes = 512 << 20
 
-var Version = "0.9.2"
+var Version = "0.9.3"
 
 var ErrUnitNotFound = errors.New("unit not found")
 
