@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +80,29 @@ func TestArgumentErrorsPrintCanonicalHelp(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentHelpUsesTheAgentBinaryName(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := RunAgent(context.Background(), []string{"help", "--all"}, &stdout, &stderr); err != nil {
+		t.Fatalf("RunAgent error = %v", err)
+	}
+	var payload struct {
+		Help string `json:"help"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode help: %v", err)
+	}
+	for _, want := range []string{"wlna units status", "wlna messages tail UNIT", "Run 'wlna help api call'"} {
+		if !strings.Contains(payload.Help, want) {
+			t.Errorf("agent help does not contain %q:\n%s", want, payload.Help)
+		}
+	}
+	for _, line := range strings.Split(payload.Help, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "wln ") || strings.Contains(line, "'wln ") {
+			t.Errorf("agent help offers the wln invocation: %q", line)
+		}
 	}
 }
 

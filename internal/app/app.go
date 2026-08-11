@@ -62,7 +62,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, agentMode
 	if err != nil {
 		return err
 	}
-	global := flag.NewFlagSet("wln", flag.ContinueOnError)
+	global := flag.NewFlagSet(invocationName(agentMode), flag.ContinueOnError)
 	if agentMode {
 		global.SetOutput(io.Discard)
 	} else {
@@ -75,7 +75,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, agentMode
 	wide := global.Bool("wide", false, "do not fit tables to the terminal width")
 	compact := global.Bool("compact", agentMode, "emit compact JSON where JSON output is selected")
 	version := global.Bool("version", false, "print version")
-	global.Usage = func() { printUsage(stderr) }
+	global.Usage = func() { printUsage(stderr, agentMode) }
 	if err := global.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -207,8 +207,8 @@ func runUpdate(ctx context.Context, args []string, opts options) error {
 	return nil
 }
 
-func printUsage(w io.Writer) {
-	_ = printCommandHelp(w, nil)
+func printUsage(w io.Writer, agentMode bool) {
+	_ = printCommandHelp(w, nil, agentMode)
 }
 
 func runProfile(ctx context.Context, args []string, opts options) error {

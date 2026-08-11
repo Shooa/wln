@@ -249,7 +249,7 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 		}
 		hardwareID := unit.HardwareID
 		if strings.TrimSpace(*deviceType) != "" {
-			hardware, err := resolveDeviceType(ctx, client, *deviceType)
+			hardware, err := resolveDeviceType(ctx, client, *deviceType, opts.agentMode)
 			if err != nil {
 				return err
 			}
@@ -312,7 +312,7 @@ func runUnitsCreate(ctx context.Context, args []string, opts options) error {
 		return errors.New("--creator-id must not be negative")
 	}
 	return withClient(ctx, opts, func(client *wialon.Client) error {
-		hardware, err := resolveDeviceType(ctx, client, *deviceType)
+		hardware, err := resolveDeviceType(ctx, client, *deviceType, opts.agentMode)
 		if err != nil {
 			return err
 		}
@@ -361,7 +361,7 @@ func explainConnectivityAccess(err error) error {
 	return err
 }
 
-func resolveDeviceType(ctx context.Context, client *wialon.Client, ref string) (wialon.HardwareType, error) {
+func resolveDeviceType(ctx context.Context, client *wialon.Client, ref string, agentMode bool) (wialon.HardwareType, error) {
 	ref = strings.TrimSpace(ref)
 	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
 		if id <= 0 {
@@ -392,7 +392,7 @@ func resolveDeviceType(ctx context.Context, client *wialon.Client, ref string) (
 	if len(matches) > 1 {
 		return wialon.HardwareType{}, fmt.Errorf("device type name %q is ambiguous; use its numeric ID", ref)
 	}
-	return wialon.HardwareType{}, fmt.Errorf("device type %q is not available; run 'wln units device-types --search %q'", ref, ref)
+	return wialon.HardwareType{}, fmt.Errorf("device type %q is not available; run '%s units device-types --search %q'", ref, invocationName(agentMode), ref)
 }
 
 func connectionForUnit(ctx context.Context, client *wialon.Client, unit wialon.Unit) (unitConnection, error) {

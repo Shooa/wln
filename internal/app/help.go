@@ -55,12 +55,26 @@ func commandError(opts options, helpKey, message string) error {
 	return fmt.Errorf("%s", message)
 }
 
+// invocationName is the executable name the help text should speak about. Both
+// binaries share one help catalogue, so the catalogue stores {cmd} and the
+// renderer substitutes whichever name the user actually typed.
+func invocationName(agentMode bool) string {
+	if agentMode {
+		return "wlna"
+	}
+	return "wln"
+}
+
+func renderHelp(text string, agentMode bool) string {
+	return strings.ReplaceAll(text, "{cmd}", invocationName(agentMode))
+}
+
 func printCommandHelpForMode(w io.Writer, path []string, agentMode, compact bool) error {
 	if !agentMode {
-		return printCommandHelp(w, path)
+		return printCommandHelp(w, path, agentMode)
 	}
 	var rendered bytes.Buffer
-	if err := printCommandHelp(&rendered, path); err != nil {
+	if err := printCommandHelp(&rendered, path, agentMode); err != nil {
 		return err
 	}
 	return writeJSON(w, map[string]any{
@@ -76,20 +90,20 @@ func rejectUnexpectedArgs(fs *flag.FlagSet, opts options, helpKey string) error 
 	return commandError(opts, helpKey, fmt.Sprintf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 }
 
-func printCommandHelp(w io.Writer, path []string) error {
+func printCommandHelp(w io.Writer, path []string, agentMode bool) error {
 	key := strings.Join(path, " ")
 	if len(path) == 1 && path[0] == "--all" {
-		return printAllHelp(w)
+		return printAllHelp(w, agentMode)
 	}
 	help, ok := helpSections[key]
 	if !ok {
-		return fmt.Errorf("unknown help topic %q; run 'wln help' to list topics", key)
+		return fmt.Errorf("unknown help topic %q; run '%s help' to list topics", key, invocationName(agentMode))
 	}
-	_, err := fmt.Fprintln(w, strings.TrimSpace(help))
+	_, err := fmt.Fprintln(w, renderHelp(strings.TrimSpace(help), agentMode))
 	return err
 }
 
-func printAllHelp(w io.Writer) error {
+func printAllHelp(w io.Writer, agentMode bool) error {
 	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
@@ -97,7 +111,7 @@ func printAllHelp(w io.Writer) error {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w, strings.TrimSpace(helpSections[key])); err != nil {
+		if _, err := fmt.Fprintln(w, renderHelp(strings.TrimSpace(helpSections[key]), agentMode)); err != nil {
 			return err
 		}
 	}
@@ -105,10 +119,10 @@ func printAllHelp(w io.Writer) error {
 }
 
 var helpSections = map[string]string{
-	"": `wln — export and inspect data from Wialon Hosting or Wialon Local
+	"": `{cmd} — export and inspect data from Wialon Hosting or Wialon Local
 
 USAGE
-  wln [GLOBAL OPTIONS] COMMAND [SUBCOMMAND] [ARGUMENTS] [OPTIONS]
+  {cmd} [GLOBAL OPTIONS] COMMAND [SUBCOMMAND] [ARGUMENTS] [OPTIONS]
 
 COMMANDS
   profile   Log in and manage saved server profiles
@@ -116,7 +130,7 @@ COMMANDS
   messages  Export, tail, or download messages
   doctor    Validate the selected profile and API access
   api       Call a Remote API service directly
-  update    Check for and install the latest wln release
+  update    Check for and install the latest release
 
 GLOBAL OPTIONS
   --profile NAME      Override the configured default profile
@@ -125,7 +139,7 @@ GLOBAL OPTIONS
   --width N           Override detected terminal width for tables
   --wide              Do not fit tables to the terminal width
   --compact           Emit compact JSON where JSON output is selected
-  --version           Print the wln version
+  --version           Print the version
 
 AGENT MODE
   Invoke the same executable as wlna to select compact JSON defaults for
@@ -140,9 +154,9 @@ AGENT MODE
   stdout is the requested binary export, not JSON.
 
 HELP
-  wln help COMMAND [SUBCOMMAND]
-  wln COMMAND [SUBCOMMAND] --help
-  wln help --all
+  {cmd} help COMMAND [SUBCOMMAND]
+  {cmd} COMMAND [SUBCOMMAND] --help
+  {cmd} help --all
 
 CONVENTIONS
   UNIT is an exact Wialon ID, exact unit name, or exact unique ID/IMEI.
@@ -151,7 +165,7 @@ CONVENTIONS
   Progress and diagnostics go to stderr. Structured data goes to stdout.
   Existing files are not replaced unless --force is supplied.`,
 
-	"profile": `wln profile — manage authentication profiles
+	"profile": `{cmd} profile — manage authentication profiles
 
 SUBCOMMANDS
   login NAME   Open Wialon login in a browser and save the issued token
@@ -161,12 +175,12 @@ SUBCOMMANDS
   remove NAME  Remove a saved profile
   check [NAME] Diagnose a profile
 
-Run 'wln help profile SUBCOMMAND' for details.`,
+Run '{cmd} help profile SUBCOMMAND' for details.`,
 
-	"profile login": `wln profile login — browser-based Wialon authorization
+	"profile login": `{cmd} profile login — browser-based Wialon authorization
 
 USAGE
-  wln profile login NAME --server BASE_URL [OPTIONS]
+  {cmd} profile login NAME --server BASE_URL [OPTIONS]
 
 REQUIRED
   NAME               Local profile name
@@ -184,13 +198,13 @@ OPTIONS
   --allow-http              Permit HTTP for a trusted Wialon Local server
 
 EXAMPLE
-  wln profile login hosting --server https://hosting.wialon.com --default`,
+  {cmd} profile login hosting --server https://hosting.wialon.com --default`,
 
-	"profile add": `wln profile add — save an existing access token
+	"profile add": `{cmd} profile add — save an existing access token
 
 USAGE
-  WLN_TOKEN=... wln profile add NAME [OPTIONS]
-  command-producing-token | wln profile add NAME --token-stdin [OPTIONS]
+  WLN_TOKEN=... {cmd} profile add NAME [OPTIONS]
+  command-producing-token | {cmd} profile add NAME --token-stdin [OPTIONS]
 
 OPTIONS
   --server URL       Remote API server (default: https://hst-api.wialon.com)
@@ -201,28 +215,28 @@ OPTIONS
 
 Tokens are never accepted as command-line arguments or printed.`,
 
-	"profile list": `wln profile list — list saved profiles
+	"profile list": `{cmd} profile list — list saved profiles
 
 USAGE
-  wln profile list [--format table|json]
+  {cmd} profile list [--format table|json]
 
 Tokens and session IDs are never included in the output.`,
-	"profile use": `wln profile use — select the default profile
+	"profile use": `{cmd} profile use — select the default profile
 
 USAGE
-  wln profile use NAME`,
-	"profile remove": `wln profile remove — remove a saved profile
+  {cmd} profile use NAME`,
+	"profile remove": `{cmd} profile remove — remove a saved profile
 
 USAGE
-  wln profile remove NAME`,
-	"profile check": `wln profile check — diagnose a profile
+  {cmd} profile remove NAME`,
+	"profile check": `{cmd} profile check — diagnose a profile
 
 USAGE
-  wln profile check [NAME]
+  {cmd} profile check [NAME]
 
-Equivalent to 'wln doctor' with the selected profile.`,
+Equivalent to '{cmd} doctor' with the selected profile.`,
 
-	"units": `wln units — inspect and manage Wialon units
+	"units": `{cmd} units — inspect and manage Wialon units
 
 SUBCOMMANDS
   list    List identity and hardware information
@@ -233,12 +247,12 @@ SUBCOMMANDS
   create        Create a unit and assign its device type and unique ID
   update        Change a unit's device type and/or unique ID
 
-Run 'wln help units SUBCOMMAND' for details.`,
+Run '{cmd} help units SUBCOMMAND' for details.`,
 
-	"units list": `wln units list — list accessible units
+	"units list": `{cmd} units list — list accessible units
 
 USAGE
-  wln units list [--search MASK] [--format table|json|csv] [--fields LIST]
+  {cmd} units list [--search MASK] [--format table|json|csv] [--fields LIST]
 
 OPTIONS
   --search MASK   Wialon unit-name mask (default: *)
@@ -246,13 +260,13 @@ OPTIONS
   --fields LIST   Comma-separated JSON fields; requires --format json
 
 EXAMPLES
-  wln units list
-  wln units list --search 'Truck*' --format json`,
+  {cmd} units list
+  {cmd} units list --search 'Truck*' --format json`,
 
-	"units get": `wln units get — get one unit and device connection settings
+	"units get": `{cmd} units get — get one unit and device connection settings
 
 USAGE
-  wln units get UNIT [--format table|json] [--fields LIST]
+  {cmd} units get UNIT [--format table|json] [--fields LIST]
 
 OPTIONS
   --format VALUE  table or json (default: table; wlna: json)
@@ -268,10 +282,10 @@ units. Exact unit names and unique IDs/IMEIs are also accepted.
 EXAMPLE
   wlna units get 1001 --fields unit_id,unique_id,device_type,tcp_port`,
 
-	"units status": `wln units status — inspect last activity and position age
+	"units status": `{cmd} units status — inspect last activity and position age
 
 USAGE
-  wln units status [UNIT] [OPTIONS]
+  {cmd} units status [UNIT] [OPTIONS]
 
 OPTIONS
   --search MASK       Wialon unit-name mask (default: *)
@@ -283,16 +297,16 @@ OPTIONS
   --format VALUE      table, json, or csv (default: table)
 
 EXAMPLES
-  wln units status 1001
-  wln units status --offline --inactive 30d --sort age
+  {cmd} units status 1001
+  {cmd} units status --offline --inactive 30d --sort age
 
 Use --inactive rather than --stale when selecting an unused unit: a unit may
 have no recent GPS point while still sending current non-position messages.`,
 
-	"units device-types": `wln units device-types — list available hardware types
+	"units device-types": `{cmd} units device-types — list available hardware types
 
 USAGE
-  wln units device-types [--search TEXT] [--format table|json|csv]
+  {cmd} units device-types [--search TEXT] [--format table|json|csv]
 
 OPTIONS
   --search TEXT   Case-insensitive name substring (default: *)
@@ -301,25 +315,25 @@ OPTIONS
 The result includes the numeric device type ID and its TCP/UDP ports.
 
 EXAMPLES
-  wln units device-types --search Teltonika
-  wln units device-types --format json`,
+  {cmd} units device-types --search Teltonika
+  {cmd} units device-types --format json`,
 
-	"units connection": `wln units connection — show device connection settings
+	"units connection": `{cmd} units connection — show device connection settings
 
 USAGE
-  wln units connection UNIT [--format table|json]
+  {cmd} units connection UNIT [--format table|json]
 
 Shows the unit's unique ID, device type, Wialon hardware gateway address, and
 the TCP/UDP ports advertised for that device type.
 
 EXAMPLES
-  wln units connection 1001
-  wln units connection 123456789012345 --format json`,
+  {cmd} units connection 1001
+  {cmd} units connection 123456789012345 --format json`,
 
-	"units create": `wln units create — create a Wialon unit
+	"units create": `{cmd} units create — create a Wialon unit
 
 USAGE
-  wln units create NAME --device-type TYPE (--unique-id ID | --imei IMEI) [OPTIONS]
+  {cmd} units create NAME --device-type TYPE (--unique-id ID | --imei IMEI) [OPTIONS]
 
 OPTIONS
   --device-type TYPE  Numeric device type ID or exact name
@@ -334,12 +348,12 @@ Editing the unique ID requires a token created with --access 4864 and the
 Edit connectivity settings right to the unit.
 
 EXAMPLE
-  wln units create "Truck 01" --device-type "Teltonika FMB920" --imei 123456789012345`,
+  {cmd} units create "Truck 01" --device-type "Teltonika FMB920" --imei 123456789012345`,
 
-	"units update": `wln units update — change device connectivity identity
+	"units update": `{cmd} units update — change device connectivity identity
 
 USAGE
-  wln units update UNIT [--device-type TYPE] [--unique-id ID | --imei IMEI]
+  {cmd} units update UNIT [--device-type TYPE] [--unique-id ID | --imei IMEI]
                         [--format table|json]
 
 At least one changed value is required. An omitted value is preserved. Wialon
@@ -348,23 +362,23 @@ This requires a token created with --access 4864 and the Edit connectivity
 settings right to the unit.
 
 EXAMPLES
-  wln units update 1001 --imei 123456789012345
-  wln units update 1001 --device-type "Teltonika FMB920"
-  wln units update 1001 --device-type 123 --unique-id 123456789012345`,
+  {cmd} units update 1001 --imei 123456789012345
+  {cmd} units update 1001 --device-type "Teltonika FMB920"
+  {cmd} units update 1001 --device-type 123 --unique-id 123456789012345`,
 
-	"messages": `wln messages — retrieve Wialon messages
+	"messages": `{cmd} messages — retrieve Wialon messages
 
 SUBCOMMANDS
   get     Export messages to CSV, JSON, or NDJSON
   tail    Print recent messages and optionally follow new ones
   export  Download a native Wialon format
 
-Run 'wln help messages SUBCOMMAND' for details.`,
+Run '{cmd} help messages SUBCOMMAND' for details.`,
 
-	"messages get": `wln messages get — export an interval of messages
+	"messages get": `{cmd} messages get — export an interval of messages
 
 USAGE
-  wln messages get UNIT [INTERVAL] [OPTIONS]
+  {cmd} messages get UNIT [INTERVAL] [OPTIONS]
 
 INTERVAL (choose at most one start selector)
   --from RFC3339      Explicit start; default is local midnight
@@ -387,14 +401,14 @@ DEFAULT
   wialon-UNIQUE_ID-YYYY-MM-DD.csv in the current directory.
 
 EXAMPLES
-  wln messages get 1001
-  wln messages get 1001 --last 2h --format ndjson --output -
-  wln messages get 1001 --yesterday --params temperature,voltage`,
+  {cmd} messages get 1001
+  {cmd} messages get 1001 --last 2h --format ndjson --output -
+  {cmd} messages get 1001 --yesterday --params temperature,voltage`,
 
-	"messages tail": `wln messages tail — print recent messages
+	"messages tail": `{cmd} messages tail — print recent messages
 
 USAGE
-  wln messages tail UNIT [OPTIONS]
+  {cmd} messages tail UNIT [OPTIONS]
 
 OPTIONS
   -n N                Number of recent messages (default: 20, max: 10000)
@@ -406,18 +420,18 @@ OPTIONS
   --all-types         Include non-telemetry message types
 
 EXAMPLES
-  wln messages tail 1001 -n 10
-  wln messages tail 1001 --follow --format ndjson
-  wln messages tail 1001 --max-params 60`,
+  {cmd} messages tail 1001 -n 10
+  {cmd} messages tail 1001 --follow --format ndjson
+  {cmd} messages tail 1001 --max-params 60`,
 
-	"messages export": `wln messages export — download a native Wialon file
+	"messages export": `{cmd} messages export — download a native Wialon file
 
 USAGE
-  wln messages export UNIT [INTERVAL] --format kml|plt|wln|wlb [OPTIONS]
+  {cmd} messages export UNIT [INTERVAL] --format kml|plt|wln|wlb [OPTIONS]
 
 INTERVAL
   --from, --to, --last, --today, --yesterday, and --since work as in
-  'wln messages get'. The default interval is today through now.
+  '{cmd} messages get'. The default interval is today through now.
 
 OPTIONS
   --format VALUE  kml, plt, wln, or wlb (default: wln)
@@ -426,22 +440,22 @@ OPTIONS
   --force         Replace an existing file
 
 EXAMPLES
-  wln messages export 1001 --today --format wln
-  wln messages export 1001 --last 24h --format kml
-  wln messages export 1001 --yesterday --format wlb --compress`,
+  {cmd} messages export 1001 --today --format wln
+  {cmd} messages export 1001 --last 24h --format kml
+  {cmd} messages export 1001 --yesterday --format wlb --compress`,
 
-	"doctor": `wln doctor — validate configuration and API access
+	"doctor": `{cmd} doctor — validate configuration and API access
 
 USAGE
-  wln [--profile NAME] doctor [--format table|json]
+  {cmd} [--profile NAME] doctor [--format table|json]
 
 Checks the selected profile, server, login latency, authenticated user, server
 time drift, and accessible unit count. Tokens and session IDs are not shown.`,
 
-	"update": `wln update — update the current executable
+	"update": `{cmd} update — update the current executable
 
 USAGE
-  wln update [--check]
+  {cmd} update [--check]
 
 OPTIONS
   --check  Check GitHub Releases without installing the update
@@ -449,34 +463,34 @@ OPTIONS
 The downloaded archive is verified against the release SHA256SUMS before the
 executable is replaced. The command also installs or synchronizes the companion
 name (wln or wlna) beside the current executable. On Windows, replacement
-finishes after wln exits.
+finishes after {cmd} exits.
 
 Automatic checks run at most once every 24 hours. Set WLN_NO_UPDATE_CHECK=1 to
 disable startup checks.
 
 EXAMPLES
-  wln update --check
-  wln update`,
+  {cmd} update --check
+  {cmd} update`,
 
-	"api": `wln api — direct Remote API access
+	"api": `{cmd} api — direct Remote API access
 
 SUBCOMMANDS
   call SERVICE  Execute an authenticated service
 
-Run 'wln help api call' for details.`,
+Run '{cmd} help api call' for details.`,
 
-	"api call": `wln api call — execute an authenticated Remote API service
+	"api call": `{cmd} api call — execute an authenticated Remote API service
 
 USAGE
-  wln api call SERVICE [--params JSON|@FILE] [--compact]
+  {cmd} api call SERVICE [--params JSON|@FILE] [--compact]
 
 OPTIONS
   --params VALUE  JSON object/array or @FILE (default: {})
   --compact       Emit compact JSON instead of indented JSON
 
 EXAMPLES
-  wln api call user/get_locale --params '{}'
-  wln api call core/search_items --params @request.json
+  {cmd} api call user/get_locale --params '{}'
+  {cmd} api call core/search_items --params @request.json
 
 Responses are JSON. Credential-like fields are recursively redacted. Login,
 logout, and credential-management services are blocked or managed internally.`,
