@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -314,68 +315,18 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if *server == "" {
 			return commandError(opts, "profile login", "--server is required for a new profile and must be the base URL of the Wialon installation")
 		}
-		*server = loginBaseURL(*server)
-		if err := validateServer(*server, *allowHTTP); err != nil {
-			return err
-		}
 		if *access <= 0 {
 			return errors.New("--access must be a positive decimal token flag combination")
 		}
 		if *callbackTimeout <= 0 {
 			return errors.New("--callback-timeout must be positive")
 		}
-		openLogin := func(target string) error {
-			if opts.agentMode {
-				if err := writeJSON(opts.stderr, map[string]any{"event": "authorization_url", "url": target, "manual": *noOpen}, opts.compact); err != nil {
-					return err
-				}
-				if *noOpen {
-					return nil
-				}
-				if err := openBrowser(target); err != nil {
-					return writeJSON(opts.stderr, map[string]any{"event": "browser_open_failed", "message": err.Error()}, opts.compact)
-				}
-				return nil
-			}
-			fmt.Fprintf(opts.stderr, "Wialon login URL: %s\n", target)
-			if *noOpen {
-				fmt.Fprintln(opts.stderr, "Open the URL manually; waiting for the local callback...")
-				return nil
-			}
-			if err := openBrowser(target); err != nil {
-				fmt.Fprintf(opts.stderr, "Could not open the browser automatically: %v\nOpen the URL manually; waiting for the local callback...\n", err)
-			}
-			return nil
-		}
-		result, err := oauthflow.Authorize(ctx, oauthflow.Options{
-			BaseURL: *server, ClientID: "wln", Access: *access,
-			Duration: *duration, Language: *language, User: *user,
-			CallbackLimit: *callbackTimeout,
-		}, openLogin)
+		result, err := authorizeProfile(ctx, opts, cfg, name, loginRequest{
+			server: *server, operateAs: *operateAs, user: *user, language: *language,
+			access: *access, duration: *duration, callbackTimeout: *callbackTimeout,
+			allowHTTP: *allowHTTP, noOpen: *noOpen, makeDefault: *makeDefault,
+		})
 		if err != nil {
-			return err
-		}
-		if err := validateServer(result.SDKURL, *allowHTTP); err != nil {
-			return fmt.Errorf("Wialon callback API URL: %w", err)
-		}
-		client, err := wialon.New(result.SDKURL, opts.timeout)
-		if err != nil {
-			return err
-		}
-		if err := client.Login(ctx, result.Token, *operateAs); err != nil {
-			return fmt.Errorf("validate issued token: %w", err)
-		}
-		if err := client.Logout(context.WithoutCancel(ctx)); err != nil {
-			return fmt.Errorf("validate issued token logout: %w", err)
-		}
-		cfg.Profiles[name] = config.Profile{
-			Server: strings.TrimRight(result.SDKURL, "/"), Token: result.Token, OperateAs: *operateAs,
-			LoginServer: *server, Access: *access,
-		}
-		if cfg.DefaultProfile == "" || *makeDefault {
-			cfg.DefaultProfile = name
-		}
-		if err := cfg.Save(opts.configPath); err != nil {
 			return err
 		}
 		if opts.agentMode {
@@ -461,6 +412,77 @@ func validateProfileName(name string) error {
 		return fmt.Errorf("invalid profile name %q", name)
 	}
 	return nil
+}
+
+type loginRequest struct {
+	server, operateAs, user, language string
+	access                            int64
+	duration, callbackTimeout         time.Duration
+	allowHTTP, noOpen, makeDefault    bool
+}
+
+// authorizeProfile runs the browser login flow, validates the issued token,
+// and saves it with the settings needed to repeat the login later.
+func authorizeProfile(ctx context.Context, opts options, cfg *config.File, name string, req loginRequest) (oauthflow.Result, error) {
+	server := loginBaseURL(req.server)
+	if err := validateServer(server, req.allowHTTP); err != nil {
+		return oauthflow.Result{}, err
+	}
+	openLogin := func(target string) error {
+		if opts.agentMode {
+			if err := writeJSON(opts.stderr, map[string]any{"event": "authorization_url", "url": target, "manual": req.noOpen}, opts.compact); err != nil {
+				return err
+			}
+			if req.noOpen {
+				return nil
+			}
+			if err := openBrowser(target); err != nil {
+				return writeJSON(opts.stderr, map[string]any{"event": "browser_open_failed", "message": err.Error()}, opts.compact)
+			}
+			return nil
+		}
+		fmt.Fprintf(opts.stderr, "Wialon login URL: %s\n", target)
+		if req.noOpen {
+			fmt.Fprintln(opts.stderr, "Open the URL manually; waiting for the local callback...")
+			return nil
+		}
+		if err := openBrowser(target); err != nil {
+			fmt.Fprintf(opts.stderr, "Could not open the browser automatically: %v\nOpen the URL manually; waiting for the local callback...\n", err)
+		}
+		return nil
+	}
+	result, err := oauthflow.Authorize(ctx, oauthflow.Options{
+		BaseURL: server, ClientID: "wln", Access: req.access,
+		Duration: req.duration, Language: req.language, User: req.user,
+		CallbackLimit: req.callbackTimeout,
+	}, openLogin)
+	if err != nil {
+		return oauthflow.Result{}, err
+	}
+	if err := validateServer(result.SDKURL, req.allowHTTP); err != nil {
+		return oauthflow.Result{}, fmt.Errorf("Wialon callback API URL: %w", err)
+	}
+	client, err := wialon.New(result.SDKURL, opts.timeout)
+	if err != nil {
+		return oauthflow.Result{}, err
+	}
+	if err := client.Login(ctx, result.Token, req.operateAs); err != nil {
+		return oauthflow.Result{}, fmt.Errorf("validate issued token: %w", err)
+	}
+	if err := client.Logout(context.WithoutCancel(ctx)); err != nil {
+		return oauthflow.Result{}, fmt.Errorf("validate issued token logout: %w", err)
+	}
+	cfg.Profiles[name] = config.Profile{
+		Server: strings.TrimRight(result.SDKURL, "/"), Token: result.Token, OperateAs: req.operateAs,
+		LoginServer: server, Access: req.access,
+	}
+	if cfg.DefaultProfile == "" || req.makeDefault {
+		cfg.DefaultProfile = name
+	}
+	if err := cfg.Save(opts.configPath); err != nil {
+		return oauthflow.Result{}, err
+	}
+	return result, nil
 }
 
 // loginBaseURL maps a Remote API address to the installation that serves
@@ -1123,4 +1145,79 @@ func withClient(ctx context.Context, opts options, fn func(*wialon.Client) error
 	}
 	defer client.Logout(context.WithoutCancel(ctx))
 	return fn(client)
+}
+
+// Token access flags that editing commands require beyond the defaults.
+const (
+	accessEditNonSensitive int64 = 0x400
+	accessEditCritical     int64 = 0x1000
+)
+
+// withAccess runs fn like withClient. When Wialon denies access and the profile
+// token was not issued with the required flags, it offers to re-authorize the
+// profile in the browser and retries once.
+func withAccess(ctx context.Context, opts options, required int64, fn func(*wialon.Client) error) error {
+	err := withClient(ctx, opts, fn)
+	var apiErr *wialon.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != 7 {
+		return err
+	}
+	cfg, loadErr := config.Load(opts.configPath)
+	if loadErr != nil {
+		return err
+	}
+	name, profile, resolveErr := cfg.Resolve(opts.profile)
+	if resolveErr != nil || profile.Access&required == required {
+		return err
+	}
+	access := profile.Access
+	if access == 0 {
+		access = oauthflow.DefaultAccess
+	}
+	access |= required
+	hint := fmt.Sprintf("re-authorize with '%s profile login %s --access %d'", invocationName(opts.agentMode), name, access)
+	if opts.agentMode {
+		return fmt.Errorf("%w; %s", err, hint)
+	}
+	question := fmt.Sprintf("Wialon denied access; the %q profile token may lack access flags 0x%x.\nRe-authorize in the browser with --access %d?", name, required&^profile.Access, access)
+	if !confirmReauthorization(question) {
+		return fmt.Errorf("%w; %s", err, hint)
+	}
+	loginServer := profile.LoginServer
+	if loginServer == "" {
+		loginServer = profile.Server
+	}
+	if _, err := authorizeProfile(ctx, opts, cfg, name, loginRequest{
+		server: loginServer, operateAs: profile.OperateAs, language: "ru", access: access,
+		callbackTimeout: 5 * time.Minute,
+		allowHTTP:       strings.HasPrefix(loginServer, "http://") || strings.HasPrefix(profile.Server, "http://"),
+	}); err != nil {
+		return fmt.Errorf("re-authorize profile %q: %w", name, err)
+	}
+	fmt.Fprintf(opts.stderr, "Profile %q re-authorized; retrying.\n", name)
+	return withClient(ctx, opts, fn)
+}
+
+// confirmReauthorization asks on the controlling terminal and declines when
+// there is none. Tests replace it.
+var confirmReauthorization = func(question string) bool {
+	if !isCharDevice(os.Stdin) || !isCharDevice(os.Stderr) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "%s [Y/n] ", question)
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		fmt.Fprintln(os.Stderr)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "", "y", "yes", "д", "да":
+		return true
+	}
+	return false
+}
+
+func isCharDevice(file *os.File) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

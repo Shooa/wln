@@ -195,7 +195,7 @@ OPTIONS
   --operate-as USER         Open API sessions as a subuser
   --user USER               Pre-fill the login name
   --lang CODE               Login page language (default: ru)
-  --access FLAGS            Decimal token access flags (default: 768)
+  --access FLAGS            Decimal token access flags (default: 1792)
   --duration DURATION       Token lifetime; 0 means unlimited
   --callback-timeout DURATION  Authorization timeout (default: 5m)
   --no-open                 Print URL instead of opening a browser
@@ -250,7 +250,7 @@ SUBCOMMANDS
   device-types  List available device types and their TCP/UDP ports
   connection    Show the settings needed to connect a device
   create        Create a unit and assign its device type and unique ID
-  update        Change a unit's device type and/or unique ID
+  update        Rename a unit or change its device type and/or unique ID
 
 Run '{cmd} help units SUBCOMMAND' for details.`,
 
@@ -349,24 +349,34 @@ OPTIONS
 
 Wialon creates the object first and assigns its unique ID in a second API call.
 If the second call fails, the error reports the ID of the object already created.
-Editing the unique ID requires a token created with --access 4864 and the
-Edit connectivity settings right to the unit.
+Editing the unique ID requires the 0x1000 token access flag (for example
+--access 5888) and the Edit connectivity settings right to the unit. When the
+token lacks it, wln offers to re-authorize the profile in the browser.
 
 EXAMPLE
   {cmd} units create "Truck 01" --device-type "Teltonika FMB920" --imei 123456789012345`,
 
-	"units update": `{cmd} units update — change device connectivity identity
+	"units update": `{cmd} units update — rename a unit or change its connectivity identity
 
 USAGE
-  {cmd} units update UNIT [--device-type TYPE] [--unique-id ID | --imei IMEI]
-                        [--format table|json]
+  {cmd} units update UNIT [--name NAME] [--device-type TYPE]
+                        [--unique-id ID | --imei IMEI] [--format table|json]
 
-At least one changed value is required. An omitted value is preserved. Wialon
-applies the device type and primary unique ID together in one API operation.
-This requires a token created with --access 4864 and the Edit connectivity
-settings right to the unit.
+At least one changed value is required. An omitted value is preserved.
+
+--name renames the unit (4-50 characters) through item/update_name. It requires
+the 0x400 token access flag, included by default, and the Rename right to the
+unit.
+
+Wialon applies the device type and primary unique ID together in one API
+operation. This requires the 0x1000 token access flag (for example
+--access 5888) and the Edit connectivity settings right to the unit.
+
+When the token lacks a required flag, wln offers to re-authorize the profile in
+the browser and retries; wlna reports the profile login command instead.
 
 EXAMPLES
+  {cmd} units update 1001 --name "Truck 02"
   {cmd} units update 1001 --imei 123456789012345
   {cmd} units update 1001 --device-type "Teltonika FMB920"
   {cmd} units update 1001 --device-type 123 --unique-id 123456789012345`,

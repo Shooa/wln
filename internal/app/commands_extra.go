@@ -224,6 +224,8 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 	var uniqueID, imei optionalString
 	fs.Var(&uniqueID, "unique-id", "new primary unique ID")
 	fs.Var(&imei, "imei", "alias for --unique-id")
+	var name optionalString
+	fs.Var(&name, "name", "new unit name")
 	deviceType := fs.String("device-type", "", "new device type ID or exact name")
 	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
 	if err := fs.Parse(args); err != nil {
@@ -239,10 +241,23 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 	if uniqueIDSet && len([]rune(newUniqueID)) > 100 {
 		return errors.New("--unique-id/--imei must not exceed 100 characters")
 	}
-	if !uniqueIDSet && strings.TrimSpace(*deviceType) == "" {
-		return errors.New("at least one of --unique-id/--imei or --device-type is required")
+	if name.set {
+		if count := len([]rune(name.value)); count < 4 || count > 50 {
+			return errors.New("--name must contain between 4 and 50 characters")
+		}
 	}
-	return withClient(ctx, opts, func(client *wialon.Client) error {
+	connectivitySet := uniqueIDSet || strings.TrimSpace(*deviceType) != ""
+	if !name.set && !connectivitySet {
+		return errors.New("at least one of --name, --unique-id/--imei, or --device-type is required")
+	}
+	var required int64
+	if name.set {
+		required |= accessEditNonSensitive
+	}
+	if connectivitySet {
+		required |= accessEditCritical
+	}
+	return withAccess(ctx, opts, required, func(client *wialon.Client) error {
 		unit, err := resolveUnit(ctx, client, unitRef)
 		if err != nil {
 			return err
@@ -255,14 +270,27 @@ func runUnitsUpdate(ctx context.Context, args []string, opts options) error {
 			}
 			hardwareID = hardware.ID
 		}
-		if !uniqueIDSet {
-			newUniqueID = unit.UniqueID
+		if name.set {
+			renamed, err := client.RenameItem(ctx, unit.ID, name.value)
+			if err != nil {
+				return explainRenameAccess(err)
+			}
+			unit.Name = renamed
 		}
-		updated, err := client.UpdateDeviceType(ctx, unit.ID, hardwareID, newUniqueID)
-		if err != nil {
-			return explainConnectivityAccess(err)
+		if connectivitySet {
+			if !uniqueIDSet {
+				newUniqueID = unit.UniqueID
+			}
+			updated, err := client.UpdateDeviceType(ctx, unit.ID, hardwareID, newUniqueID)
+			if err != nil {
+				err = explainConnectivityAccess(err)
+				if name.set {
+					return fmt.Errorf("unit id=%d was renamed to %q, but updating its device type and unique ID failed: %w", unit.ID, unit.Name, err)
+				}
+				return err
+			}
+			unit.UniqueID, unit.HardwareID = updated.UniqueID, updated.HardwareID
 		}
-		unit.UniqueID, unit.HardwareID = updated.UniqueID, updated.HardwareID
 		connection, err := connectionForUnit(ctx, client, unit)
 		if err != nil {
 			return err
@@ -311,7 +339,7 @@ func runUnitsCreate(ctx context.Context, args []string, opts options) error {
 	if *creatorID < 0 {
 		return errors.New("--creator-id must not be negative")
 	}
-	return withClient(ctx, opts, func(client *wialon.Client) error {
+	return withAccess(ctx, opts, accessEditNonSensitive|accessEditCritical, func(client *wialon.Client) error {
 		hardware, err := resolveDeviceType(ctx, client, *deviceType, opts.agentMode)
 		if err != nil {
 			return err
@@ -356,7 +384,15 @@ func selectedUniqueID(uniqueID, imei optionalString) (string, bool, error) {
 func explainConnectivityAccess(err error) error {
 	var apiErr *wialon.APIError
 	if errors.As(err, &apiErr) && apiErr.Code == 7 {
-		return fmt.Errorf("%w; ensure the profile token was authorized with --access 4864 and the user has the Edit connectivity settings right to this unit", err)
+		return fmt.Errorf("%w; the user needs the Edit connectivity settings right to this unit and the token needs access flag 0x1000", err)
+	}
+	return err
+}
+
+func explainRenameAccess(err error) error {
+	var apiErr *wialon.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == 7 {
+		return fmt.Errorf("%w; the user needs the Rename right to this unit and the token needs access flag 0x400", err)
 	}
 	return err
 }

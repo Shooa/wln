@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,7 +185,7 @@ func TestTruncateRunes(t *testing.T) {
 }
 
 func TestUnitsConnectivityCommands(t *testing.T) {
-	var createParams, updateParams map[string]any
+	var createParams, updateParams, renameParams map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		var params map[string]any
@@ -205,6 +207,9 @@ func TestUnitsConnectivityCommands(t *testing.T) {
 		case "core/create_unit":
 			createParams = params
 			_, _ = w.Write([]byte(`{"item":{"id":1002,"nm":"Truck 02","hw":42},"flags":257}`))
+		case "item/update_name":
+			renameParams = params
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"nm":%q}`, params["name"])))
 		case "unit/update_device_type":
 			updateParams = params
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"uid":%q,"hw":42}`, params["uniqueId"])))
@@ -278,11 +283,173 @@ func TestUnitsConnectivityCommands(t *testing.T) {
 			t.Fatalf("update params = %#v", updateParams)
 		}
 	})
+
+	t.Run("rename only", func(t *testing.T) {
+		updateParams = nil
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "update", "1001", "--name", "OSMOS_7x", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		if renameParams["itemId"] != float64(1001) || renameParams["name"] != "OSMOS_7x" {
+			t.Fatalf("rename params = %#v", renameParams)
+		}
+		if updateParams != nil {
+			t.Fatalf("rename called unit/update_device_type: %#v", updateParams)
+		}
+		var connection unitConnection
+		if err := json.Unmarshal(out.Bytes(), &connection); err != nil {
+			t.Fatal(err)
+		}
+		if connection.Name != "OSMOS_7x" || connection.UniqueID != "old-imei" {
+			t.Fatalf("connection = %#v", connection)
+		}
+	})
+
+	t.Run("rename length", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "update", "1001", "--name", "abc"}, &out, &errOut)
+		if err == nil || !strings.Contains(err.Error(), "between 4 and 50") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestAccessDeniedOffersReauthorizationAndRetries(t *testing.T) {
+	newToken := strings.Repeat("n", 72)
+	var renames []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.Form.Get("svc") {
+		case "token/login":
+			var params map[string]any
+			_ = json.Unmarshal([]byte(r.Form.Get("params")), &params)
+			sid := "old-session"
+			if params["token"] == newToken {
+				sid = "new-session"
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"eid":%q}`, sid)))
+		case "core/search_item":
+			_, _ = w.Write([]byte(`{"item":{"id":1001,"nm":"Truck 01","uid":"imei","hw":42}}`))
+		case "item/update_name":
+			renames = append(renames, r.Form.Get("sid"))
+			if r.Form.Get("sid") != "new-session" {
+				_, _ = w.Write([]byte(`{"error":7}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"nm":"OSMOS_7x"}`))
+		case "core/get_hw_types":
+			_, _ = w.Write([]byte(`[{"id":42,"name":"Tracker X","tp":"20332"}]`))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	}))
+	defer server.Close()
+
+	var loginURL *url.URL
+	previousOpener := openBrowser
+	openBrowser = func(target string) error {
+		login, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		loginURL = login
+		callback, err := url.Parse(login.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("state", login.Query().Get("state"))
+		query.Set("access_token", newToken)
+		query.Set("wialon_sdk_url", server.URL)
+		query.Set("svc_error", "0")
+		callback.RawQuery = query.Encode()
+		response, err := http.Get(callback.String())
+		if response != nil {
+			response.Body.Close()
+		}
+		return err
+	}
+	defer func() { openBrowser = previousOpener }()
+	answer := true
+	var questions []string
+	previousConfirm := confirmReauthorization
+	confirmReauthorization = func(question string) bool {
+		questions = append(questions, question)
+		return answer
+	}
+	defer func() { confirmReauthorization = previousConfirm }()
+
+	newConfig := func() string {
+		path := filepath.Join(t.TempDir(), "config.json")
+		cfg := &config.File{DefaultProfile: "editor", Profiles: map[string]config.Profile{
+			"editor": {Server: server.URL, Token: "secret", LoginServer: "https://hosting.wialon.com", Access: 4864},
+		}}
+		if err := cfg.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("declined", func(t *testing.T) {
+		answer, renames = false, nil
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", newConfig(), "units", "update", "1001", "--name", "OSMOS_7x"}, &out, &errOut)
+		if err == nil || !strings.Contains(err.Error(), "wln profile login editor --access 5888") {
+			t.Fatalf("err = %v", err)
+		}
+		if len(questions) != 1 || !strings.Contains(questions[0], "0x400") {
+			t.Fatalf("questions = %q", questions)
+		}
+	})
+
+	t.Run("accepted", func(t *testing.T) {
+		answer, renames, questions = true, nil, nil
+		configPath := newConfig()
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"--config", configPath, "units", "update", "1001", "--name", "OSMOS_7x", "--format", "json"}, &out, &errOut)
+		if err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		if !slices.Equal(renames, []string{"old-session", "new-session"}) {
+			t.Fatalf("renames = %v", renames)
+		}
+		if loginURL.Host != "hosting.wialon.com" || loginURL.Query().Get("access_type") != "5888" {
+			t.Fatalf("login URL = %s", loginURL)
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile := cfg.Profiles["editor"]; profile.Token != newToken || profile.Access != 5888 {
+			t.Fatalf("saved profile = %#v", profile)
+		}
+	})
+
+	t.Run("agent mode prints command without prompting", func(t *testing.T) {
+		questions = nil
+		var out, errOut bytes.Buffer
+		err := RunAgent(context.Background(), []string{"--config", newConfig(), "units", "update", "1001", "--name", "OSMOS_7x"}, &out, &errOut)
+		if err == nil || !strings.Contains(err.Error(), "wlna profile login editor --access 5888") || len(questions) != 0 {
+			t.Fatalf("err = %v, questions = %q", err, questions)
+		}
+	})
+}
+
+func TestExplainRenameAccess(t *testing.T) {
+	err := explainRenameAccess(&wialon.APIError{Code: 7})
+	for _, want := range []string{"0x400", "Rename right"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
 }
 
 func TestExplainConnectivityAccess(t *testing.T) {
 	err := explainConnectivityAccess(&wialon.APIError{Code: 7})
-	for _, want := range []string{"--access 4864", "Edit connectivity settings"} {
+	for _, want := range []string{"0x1000", "Edit connectivity settings"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}

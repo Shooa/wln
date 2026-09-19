@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	DefaultAccess        = 0x100 + 0x200
+	DefaultAccess        = 0x100 + 0x200 + 0x400
 	defaultClientID      = "wln"
 	defaultCallbackLimit = 5 * time.Minute
 )

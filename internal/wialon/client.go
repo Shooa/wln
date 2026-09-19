@@ -471,6 +471,17 @@ func (c *Client) UpdateDeviceType(ctx context.Context, unitID, hardwareID int64,
 	return Unit{ID: unitID, UniqueID: response.UID, HardwareID: response.HW}, nil
 }
 
+func (c *Client) RenameItem(ctx context.Context, itemID int64, name string) (string, error) {
+	params := map[string]any{"itemId": itemID, "name": name}
+	var response struct {
+		Name string `json:"nm"`
+	}
+	if err := c.Call(ctx, "item/update_name", params, &response); err != nil {
+		return "", fmt.Errorf("rename item: %w", err)
+	}
+	return response.Name, nil
+}
+
 type LoadResult struct {
 	Count    int              `json:"count"`
 	Messages []map[string]any `json:"messages"`

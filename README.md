@@ -3,7 +3,7 @@
 `wln` is a small, deterministic CLI for exporting telemetry from Wialon Hosting
 or Wialon Local to analysis-ready CSV. It provides profile management, unit
 discovery, authenticated access to arbitrary Remote API services, unit
-creation, connectivity identity editing, and the server/port data needed to
+creation, renaming, connectivity identity editing, and the server/port data needed to
 connect a tracker.
 
 The implementation is written in Go and talks to Wialon only through the
@@ -148,17 +148,24 @@ server, access flags, and `--operate-as` subuser are reused unless overridden.
 wln profile login editor
 ```
 
-The default access value is `768` (`0x100 + 0x200`): online/message access plus
-viewing connectivity properties such as the unit unique ID. Wialon groups
-editing connectivity settings into the broad `0x1000` critical-data scope,
-which also includes destructive rights, so `wln` does not request it by
-default. Explicitly authorize a write-capable profile when needed:
+The default access value is `1792` (`0x100 + 0x200 + 0x400`): online/message
+access, viewing data such as the unit unique ID, and editing non-sensitive data
+such as unit names. Wialon groups editing connectivity settings into the broad
+`0x1000` critical-data scope, which also includes destructive rights, so `wln`
+does not request it by default. Explicitly authorize a write-capable profile
+when needed:
 
 ```sh
 wln profile login editor \
   --server https://hosting.wialon.com \
-  --access 4864
+  --access 5888
 ```
+
+When `units create` or `units update` is denied because the profile token lacks
+the flags it needs, `wln` asks in an interactive terminal whether to
+re-authorize the profile in the browser with those flags added, then retries
+the command. `wlna` and non-interactive runs never prompt; the error names the
+`profile login` command to run instead.
 
 The authenticated user must also have the **Edit connectivity settings** right
 to the unit. The default token duration is unlimited (`0`), though Wialon
@@ -280,6 +287,7 @@ wln units create "Truck 02" \
   --imei 123456789012345
 
 wln units update 1001 --imei 987654321098765
+wln units update 1001 --name "Truck 02"
 wln units update 1001 --device-type "Teltonika FMB920"
 wln units update 1001 --device-type 123 --unique-id 987654321098765
 ```
@@ -290,6 +298,10 @@ two documented API calls: `core/create_unit`, followed by
 `unit/update_device_type` to assign the unique ID. If the second call fails,
 `wln` reports the ID of the unit that was already created instead of hiding the
 partial result.
+
+`--name` renames the unit through `item/update_name` (4–50 characters). It
+needs the `0x400` token flag, included by default, and the **Rename** right to
+the unit.
 
 ### Unit status and stale positions
 
@@ -473,6 +485,7 @@ follow their positional argument, matching the examples above.
 - [`core/search_items`](https://help.wialon.com/en/api/user-guide/api-reference/core/search_items)
 - [`core/get_hw_types`](https://help.wialon.com/en/api/user-guide/api-reference/core/get_hw_types)
 - [`core/create_unit`](https://help.wialon.com/en/api/user-guide/api-reference/core/create_unit)
+- [`item/update_name`](https://help.wialon.com/en/api/user-guide/api-reference/item/update_name)
 - [`unit/update_device_type`](https://help.wialon.com/en/api/user-guide/api-reference/unit/update_device_type)
 - [`messages/load_interval`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_interval)
 - [`messages/load_last`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_last)
