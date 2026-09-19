@@ -25,7 +25,7 @@ import (
 	"github.com/Shooa/wln/internal/wialon"
 )
 
-var Version = "0.9.3"
+var Version = "0.9.4"
 
 var openBrowser = browseropen.Open
 
