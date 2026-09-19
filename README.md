@@ -138,7 +138,15 @@ wln profile login hosting \
 `login.html`, not necessarily its Remote API address. Wialon Hosting returns
 `wialon_sdk_url` in the callback, so a login through `hosting.wialon.com`
 automatically stores `hst-api.wialon.com`. Wialon Local falls back to the same
-installation base address.
+installation base address. Passing `https://hst-api.wialon.com` to `--server`
+is treated as `https://hosting.wialon.com`.
+
+To renew the token of an existing profile, omit `--server`: the saved login
+server, access flags, and `--operate-as` subuser are reused unless overridden.
+
+```sh
+wln profile login editor
+```
 
 The default access value is `768` (`0x100 + 0x200`): online/message access plus
 viewing connectivity properties such as the unit unique ID. Wialon groups

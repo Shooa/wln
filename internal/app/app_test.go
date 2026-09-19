@@ -249,6 +249,93 @@ func TestSanitizeJSONRedactsCredentialsRecursively(t *testing.T) {
 	}
 }
 
+func TestProfileReloginReusesSavedLoginSettings(t *testing.T) {
+	token := strings.Repeat("c", 72)
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		switch r.Form.Get("svc") {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"validated-session"}`))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	}))
+	defer apiServer.Close()
+
+	var loginURL *url.URL
+	previousOpener := openBrowser
+	openBrowser = func(target string) error {
+		login, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		loginURL = login
+		callback, err := url.Parse(login.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("state", login.Query().Get("state"))
+		query.Set("access_token", token)
+		query.Set("wialon_sdk_url", apiServer.URL)
+		query.Set("svc_error", "0")
+		callback.RawQuery = query.Encode()
+		response, err := http.Get(callback.String())
+		if response != nil {
+			response.Body.Close()
+		}
+		return err
+	}
+	defer func() { openBrowser = previousOpener }()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	legacy := &config.File{DefaultProfile: "editor", Profiles: map[string]config.Profile{
+		"editor": {Server: "https://hst-api.wialon.com", Token: strings.Repeat("a", 72), OperateAs: "sub", Access: 4864},
+	}}
+	if err := legacy.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), []string{
+		"--config", configPath,
+		"profile", "login", "editor",
+		"--allow-http",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("Run error: %v\nstderr: %s", err, stderr.String())
+	}
+	if loginURL.Host != "hosting.wialon.com" || loginURL.Path != "/login.html" {
+		t.Fatalf("login URL = %s, want hosting.wialon.com/login.html", loginURL)
+	}
+	if got := loginURL.Query().Get("access_type"); got != "4864" {
+		t.Fatalf("access_type = %s, want saved 4864", got)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := cfg.Profiles["editor"]
+	want := config.Profile{Server: apiServer.URL, Token: token, OperateAs: "sub", LoginServer: "https://hosting.wialon.com", Access: 4864}
+	if profile != want {
+		t.Fatalf("saved profile = %#v, want %#v", profile, want)
+	}
+}
+
+func TestProfileLoginNewProfileRequiresServer(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), []string{
+		"--config", filepath.Join(t.TempDir(), "config.json"),
+		"profile", "login", "fresh",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error()+stderr.String(), "--server is required") {
+		t.Fatalf("err = %v, stderr = %s", err, stderr.String())
+	}
+}
+
 func TestProfileLoginBrowserCallbackValidatesAndSaves(t *testing.T) {
 	token := strings.Repeat("b", 72)
 	var services []string

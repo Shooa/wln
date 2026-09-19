@@ -13,9 +13,11 @@ import (
 const defaultServer = "https://hst-api.wialon.com"
 
 type Profile struct {
-	Server    string `json:"server"`
-	Token     string `json:"token"`
-	OperateAs string `json:"operate_as,omitempty"`
+	Server      string `json:"server"`
+	Token       string `json:"token"`
+	OperateAs   string `json:"operate_as,omitempty"`
+	LoginServer string `json:"login_server,omitempty"`
+	Access      int64  `json:"access,omitempty"`
 }
 
 type File struct {

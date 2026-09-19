@@ -294,9 +294,27 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if err := rejectUnexpectedArgs(fs, opts, "profile login"); err != nil {
 			return err
 		}
-		if *server == "" {
-			return commandError(opts, "profile login", "--server is required and must be the base URL of the Wialon installation")
+		setFlags := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+		existing, hasExisting := cfg.Profiles[name]
+		if hasExisting {
+			if *server == "" {
+				*server = existing.LoginServer
+				if *server == "" {
+					*server = existing.Server
+				}
+			}
+			if !setFlags["access"] && existing.Access > 0 {
+				*access = existing.Access
+			}
+			if !setFlags["operate-as"] {
+				*operateAs = existing.OperateAs
+			}
 		}
+		if *server == "" {
+			return commandError(opts, "profile login", "--server is required for a new profile and must be the base URL of the Wialon installation")
+		}
+		*server = loginBaseURL(*server)
 		if err := validateServer(*server, *allowHTTP); err != nil {
 			return err
 		}
@@ -350,7 +368,10 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if err := client.Logout(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("validate issued token logout: %w", err)
 		}
-		cfg.Profiles[name] = config.Profile{Server: strings.TrimRight(result.SDKURL, "/"), Token: result.Token, OperateAs: *operateAs}
+		cfg.Profiles[name] = config.Profile{
+			Server: strings.TrimRight(result.SDKURL, "/"), Token: result.Token, OperateAs: *operateAs,
+			LoginServer: *server, Access: *access,
+		}
 		if cfg.DefaultProfile == "" || *makeDefault {
 			cfg.DefaultProfile = name
 		}
@@ -440,6 +461,21 @@ func validateProfileName(name string) error {
 		return fmt.Errorf("invalid profile name %q", name)
 	}
 	return nil
+}
+
+// loginBaseURL maps a Remote API address to the installation that serves
+// login.html. Wialon Hosting splits them; Wialon Local serves both from one base.
+func loginBaseURL(server string) string {
+	server = strings.TrimRight(server, "/")
+	u, err := url.Parse(server)
+	if err != nil {
+		return server
+	}
+	if strings.EqualFold(u.Host, "hst-api.wialon.com") {
+		u.Host = "hosting.wialon.com"
+		return u.String()
+	}
+	return server
 }
 
 func validateServer(server string, allowHTTP bool) error {

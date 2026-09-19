@@ -180,11 +180,15 @@ Run '{cmd} help profile SUBCOMMAND' for details.`,
 	"profile login": `{cmd} profile login — browser-based Wialon authorization
 
 USAGE
-  {cmd} profile login NAME --server BASE_URL [OPTIONS]
+  {cmd} profile login NAME [--server BASE_URL] [OPTIONS]
 
 REQUIRED
   NAME               Local profile name
-  --server BASE_URL  Wialon installation URL containing login.html
+  --server BASE_URL  Wialon installation URL containing login.html; required
+                     for a new profile. Re-login of an existing profile reuses
+                     its saved server, access flags, and subuser.
+                     https://hst-api.wialon.com is treated as
+                     https://hosting.wialon.com.
 
 OPTIONS
   --default                 Make this the default profile
@@ -197,8 +201,9 @@ OPTIONS
   --no-open                 Print URL instead of opening a browser
   --allow-http              Permit HTTP for a trusted Wialon Local server
 
-EXAMPLE
-  {cmd} profile login hosting --server https://hosting.wialon.com --default`,
+EXAMPLES
+  {cmd} profile login hosting --server https://hosting.wialon.com --default
+  {cmd} profile login hosting`,
 
 	"profile add": `{cmd} profile add — save an existing access token
 
