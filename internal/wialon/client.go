@@ -471,6 +471,41 @@ func (c *Client) UpdateDeviceType(ctx context.Context, unitID, hardwareID int64,
 	return Unit{ID: unitID, UniqueID: response.UID, HardwareID: response.HW}, nil
 }
 
+// TokenSpec describes a token created through token/update.
+type TokenSpec struct {
+	App            string
+	ActivationTime int64
+	Duration       int64 // seconds; 0 means unlimited
+	Flags          int64
+	Items          []int64
+}
+
+// CreateToken issues a new token for the authenticated user. Wialon caps the
+// new token's flags at the flags of the current session.
+func (c *Client) CreateToken(ctx context.Context, spec TokenSpec) (string, error) {
+	if spec.App == "" {
+		spec.App = "wln"
+	}
+	items := spec.Items
+	if items == nil {
+		items = []int64{}
+	}
+	params := map[string]any{
+		"callMode": "create", "app": spec.App, "at": spec.ActivationTime,
+		"dur": spec.Duration, "fl": spec.Flags, "p": "{}", "items": items,
+	}
+	var response struct {
+		Token string `json:"h"`
+	}
+	if err := c.Call(ctx, "token/update", params, &response); err != nil {
+		return "", fmt.Errorf("create token: %w", err)
+	}
+	if len(response.Token) != 72 {
+		return "", fmt.Errorf("Wialon returned a token with invalid length %d", len(response.Token))
+	}
+	return response.Token, nil
+}
+
 func (c *Client) RenameItem(ctx context.Context, itemID int64, name string) (string, error) {
 	params := map[string]any{"itemId": itemID, "name": name}
 	var response struct {

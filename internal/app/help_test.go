@@ -62,7 +62,7 @@ func TestArgumentErrorsPrintCanonicalHelp(t *testing.T) {
 		{name: "get missing unit", args: []string{"--config", configPath, "messages", "get", "--last", "2h"}, err: "UNIT is required", want: []string{"INTERVAL", "--last DURATION", "--since HH:MM"}},
 		{name: "tail missing unit", args: []string{"--config", configPath, "messages", "tail", "--follow"}, err: "UNIT is required", want: []string{"wln messages tail UNIT", "--poll DURATION"}},
 		{name: "login missing name", args: []string{"--config", configPath, "profile", "login", "--server", "https://example.test"}, err: "profile NAME is required", want: []string{"wln profile login NAME", "--server BASE_URL"}},
-		{name: "login missing server", args: []string{"--config", configPath, "profile", "login", "test"}, err: "--server is required", want: []string{"REQUIRED", "--server BASE_URL"}},
+		{name: "derive missing name", args: []string{"--config", configPath, "profile", "derive", "--access", "1792"}, err: "profile NAME is required", want: []string{"REQUIRED", "--access FLAGS"}},
 		{name: "api missing service", args: []string{"--config", configPath, "api", "call", "--params", "{}"}, err: "SERVICE is required", want: []string{"wln api call SERVICE", "--params"}},
 		{name: "unknown subcommand", args: []string{"--config", configPath, "messages", "missing"}, err: "unknown messages subcommand", want: []string{"SUBCOMMANDS", "get", "tail", "export"}},
 		{name: "unknown flag", args: []string{"--config", configPath, "messages", "get", "unit", "--missing"}, err: "flag provided but not defined", want: []string{"INTERVAL", "--last DURATION", "--yesterday"}},

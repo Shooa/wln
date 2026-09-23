@@ -289,6 +289,8 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		makeDefault := fs.Bool("default", false, "make this the default profile")
 		allowHTTP := fs.Bool("allow-http", false, "allow an unencrypted HTTP server (trusted Wialon Local only)")
 		noOpen := fs.Bool("no-open", false, "print the login URL without opening a browser")
+		passwordStdin := fs.Bool("password-stdin", false, "read the Wialon password from standard input instead of opening a browser")
+		passwordFile := fs.String("password-file", "", "read the Wialon password from a file instead of opening a browser")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -313,7 +315,7 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 			}
 		}
 		if *server == "" {
-			return commandError(opts, "profile login", "--server is required for a new profile and must be the base URL of the Wialon installation")
+			*server = config.DefaultLoginServer()
 		}
 		if *access <= 0 {
 			return errors.New("--access must be a positive decimal token flag combination")
@@ -321,10 +323,18 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 		if *callbackTimeout <= 0 {
 			return errors.New("--callback-timeout must be positive")
 		}
+		password, err := profilePassword(*passwordStdin, *passwordFile)
+		if err != nil {
+			return err
+		}
+		if password != "" && strings.TrimSpace(*user) == "" {
+			return commandError(opts, "profile login", "--user is required for a password login")
+		}
 		result, err := authorizeProfile(ctx, opts, cfg, name, loginRequest{
 			server: *server, operateAs: *operateAs, user: *user, language: *language,
 			access: *access, duration: *duration, callbackTimeout: *callbackTimeout,
 			allowHTTP: *allowHTTP, noOpen: *noOpen, makeDefault: *makeDefault,
+			password: password,
 		})
 		if err != nil {
 			return err
@@ -337,6 +347,74 @@ func runProfile(ctx context.Context, args []string, opts options) error {
 			fmt.Fprintf(opts.stdout, "Profile %q saved.\n", name)
 		}
 		fmt.Fprintf(opts.stdout, "API server: %s\n", result.SDKURL)
+		return nil
+	case "derive":
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return commandError(opts, "profile derive", "profile NAME is required")
+		}
+		name := args[1]
+		if err := validateProfileName(name); err != nil {
+			return err
+		}
+		fs := newCommandFlagSet("profile derive", "profile derive", opts)
+		access := fs.Int64("access", 0, "token access flags in decimal; default is the source profile's access")
+		duration := fs.Duration("duration", 0, "token lifetime; 0 means unlimited")
+		items := fs.String("items", "", "comma-separated item IDs the token may access")
+		operateAs := fs.String("operate-as", "", "open API sessions as a subuser")
+		makeDefault := fs.Bool("default", false, "make this the default profile")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if err := rejectUnexpectedArgs(fs, opts, "profile derive"); err != nil {
+			return err
+		}
+		sourceName, source, err := cfg.Resolve(opts.profile)
+		if err != nil {
+			return err
+		}
+		if sourceName == name {
+			return fmt.Errorf("profile %q cannot derive from itself", name)
+		}
+		flags := *access
+		if flags == 0 {
+			flags = source.Access
+		}
+		if flags == 0 {
+			flags = oauthflow.DefaultAccess
+		}
+		if flags < 0 {
+			return errors.New("--access must be a positive decimal token flag combination")
+		}
+		itemIDs, err := parseItemIDs(*items)
+		if err != nil {
+			return err
+		}
+		var issued string
+		if err := withAccess(ctx, opts, flags, func(client *wialon.Client) error {
+			token, err := client.CreateToken(ctx, wialon.TokenSpec{
+				Duration: int64(*duration / time.Second), Flags: flags, Items: itemIDs,
+			})
+			issued = token
+			return err
+		}); err != nil {
+			return err
+		}
+		derived := source
+		derived.Token, derived.Access, derived.OperateAs = issued, flags, *operateAs
+		cfg.Profiles[name] = derived
+		if cfg.DefaultProfile == "" || *makeDefault {
+			cfg.DefaultProfile = name
+		}
+		if err := cfg.Save(opts.configPath); err != nil {
+			return err
+		}
+		if opts.agentMode {
+			return writeJSON(opts.stdout, map[string]any{
+				"ok": true, "profile": name, "source": sourceName, "default": cfg.DefaultProfile == name,
+				"server": derived.Server, "access": flags,
+			}, opts.compact)
+		}
+		fmt.Fprintf(opts.stdout, "Profile %q derived from %q with access %d; token was not printed.\n", name, sourceName, flags)
 		return nil
 	case "use":
 		if len(args) != 2 {
@@ -407,6 +485,57 @@ func profileToken(readStdin bool) (string, error) {
 	return token, nil
 }
 
+// profilePassword reads the Wialon password from a file, the environment, or
+// standard input. A password is never accepted as a command-line argument.
+func profilePassword(readStdin bool, file string) (string, error) {
+	if file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("read password file: %w", err)
+		}
+		password := strings.TrimRight(string(data), "\r\n")
+		if password == "" {
+			return "", fmt.Errorf("password file %s is empty", file)
+		}
+		return password, nil
+	}
+	if password := os.Getenv("WLN_PASSWORD"); password != "" {
+		return strings.TrimRight(password, "\r\n"), nil
+	}
+	if !readStdin {
+		return "", nil
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 16*1024))
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	password := strings.TrimRight(string(data), "\r\n")
+	if password == "" {
+		return "", errors.New("empty password")
+	}
+	return password, nil
+}
+
+func parseItemIDs(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var ids []int64
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid item ID %q in --items", part)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func validateProfileName(name string) error {
 	if name == "" || strings.ContainsAny(name, " \t\r\n/") {
 		return fmt.Errorf("invalid profile name %q", name)
@@ -416,6 +545,7 @@ func validateProfileName(name string) error {
 
 type loginRequest struct {
 	server, operateAs, user, language string
+	password                          string
 	access                            int64
 	duration, callbackTimeout         time.Duration
 	allowHTTP, noOpen, makeDefault    bool
@@ -451,11 +581,20 @@ func authorizeProfile(ctx context.Context, opts options, cfg *config.File, name 
 		}
 		return nil
 	}
-	result, err := oauthflow.Authorize(ctx, oauthflow.Options{
+	flowOptions := oauthflow.Options{
 		BaseURL: server, ClientID: "wln", Access: req.access,
 		Duration: req.duration, Language: req.language, User: req.user,
 		CallbackLimit: req.callbackTimeout,
-	}, openLogin)
+	}
+	var (
+		result oauthflow.Result
+		err    error
+	)
+	if req.password != "" {
+		result, err = oauthflow.AuthorizePassword(ctx, flowOptions, req.user, req.password)
+	} else {
+		result, err = oauthflow.Authorize(ctx, flowOptions, openLogin)
+	}
 	if err != nil {
 		return oauthflow.Result{}, err
 	}
@@ -472,9 +611,13 @@ func authorizeProfile(ctx context.Context, opts options, cfg *config.File, name 
 	if err := client.Logout(context.WithoutCancel(ctx)); err != nil {
 		return oauthflow.Result{}, fmt.Errorf("validate issued token logout: %w", err)
 	}
+	loginUser := result.UserName
+	if loginUser == "" {
+		loginUser = strings.TrimSpace(req.user)
+	}
 	cfg.Profiles[name] = config.Profile{
 		Server: strings.TrimRight(result.SDKURL, "/"), Token: result.Token, OperateAs: req.operateAs,
-		LoginServer: server, Access: req.access,
+		LoginServer: server, LoginUser: loginUser, Access: req.access,
 	}
 	if cfg.DefaultProfile == "" || req.makeDefault {
 		cfg.DefaultProfile = name
@@ -1176,22 +1319,30 @@ func withAccess(ctx context.Context, opts options, required int64, fn func(*wial
 	}
 	access |= required
 	hint := fmt.Sprintf("re-authorize with '%s profile login %s --access %d'", invocationName(opts.agentMode), name, access)
-	if opts.agentMode {
-		return fmt.Errorf("%w; %s", err, hint)
-	}
-	question := fmt.Sprintf("Wialon denied access; the %q profile token may lack access flags 0x%x.\nRe-authorize in the browser with --access %d?", name, required&^profile.Access, access)
-	if !confirmReauthorization(question) {
-		return fmt.Errorf("%w; %s", err, hint)
-	}
 	loginServer := profile.LoginServer
 	if loginServer == "" {
 		loginServer = profile.Server
 	}
-	if _, err := authorizeProfile(ctx, opts, cfg, name, loginRequest{
-		server: loginServer, operateAs: profile.OperateAs, language: "ru", access: access,
+	request := loginRequest{
+		server: loginServer, operateAs: profile.OperateAs, user: profile.LoginUser, language: "ru", access: access,
 		callbackTimeout: 5 * time.Minute,
 		allowHTTP:       strings.HasPrefix(loginServer, "http://") || strings.HasPrefix(profile.Server, "http://"),
-	}); err != nil {
+	}
+	// WLN_PASSWORD re-authorizes without a browser, so unattended runs recover
+	// on their own. Everything else needs the person at the keyboard.
+	password, passwordErr := profilePassword(false, "")
+	if passwordErr == nil && password != "" && profile.LoginUser != "" {
+		request.password = password
+		fmt.Fprintf(opts.stderr, "Re-authorizing profile %q with WLN_PASSWORD for access %d.\n", name, access)
+	} else if opts.agentMode {
+		return fmt.Errorf("%w; %s", err, hint)
+	} else {
+		question := fmt.Sprintf("Wialon denied access; the %q profile token may lack access flags 0x%x.\nRe-authorize in the browser with --access %d?", name, required&^profile.Access, access)
+		if !confirmReauthorization(question) {
+			return fmt.Errorf("%w; %s", err, hint)
+		}
+	}
+	if _, err := authorizeProfile(ctx, opts, cfg, name, request); err != nil {
 		return fmt.Errorf("re-authorize profile %q: %w", name, err)
 	}
 	fmt.Fprintf(opts.stderr, "Profile %q re-authorized; retrying.\n", name)

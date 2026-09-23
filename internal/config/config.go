@@ -10,13 +10,17 @@ import (
 	"strings"
 )
 
-const defaultServer = "https://hst-api.wialon.com"
+const (
+	defaultServer      = "https://hst-api.wialon.com"
+	defaultLoginServer = "https://hosting.wialon.com"
+)
 
 type Profile struct {
 	Server      string `json:"server"`
 	Token       string `json:"token"`
 	OperateAs   string `json:"operate_as,omitempty"`
 	LoginServer string `json:"login_server,omitempty"`
+	LoginUser   string `json:"login_user,omitempty"`
 	Access      int64  `json:"access,omitempty"`
 }
 
@@ -119,3 +123,6 @@ func (f *File) Names() []string {
 }
 
 func DefaultServer() string { return defaultServer }
+
+// DefaultLoginServer is the Wialon Hosting installation that serves login.html.
+func DefaultLoginServer() string { return defaultLoginServer }

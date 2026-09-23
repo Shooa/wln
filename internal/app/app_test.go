@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -249,6 +251,79 @@ func TestSanitizeJSONRedactsCredentialsRecursively(t *testing.T) {
 	}
 }
 
+func TestProfileLoginWithPasswordSkipsBrowser(t *testing.T) {
+	token := strings.Repeat("p", 72)
+	var apiURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login.html", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `<script>o.api_url="%s";</script>`, apiURL)
+	})
+	mux.HandleFunc("/oauth/authorize.html", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.PostForm.Get("login") != "operator" || r.PostForm.Get("passw") != "s3cret" {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `<div class='error'>Invalid user name or password</div>`)
+			return
+		}
+		target := fmt.Sprintf("%s?access_token=%s&user_name=operator&state=%s&wialon_sdk_url=%s",
+			r.PostForm.Get("redirect_uri"), token, r.URL.Query().Get("state"), apiURL)
+		w.Header().Set("Location", target)
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/wialon/ajax.html", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.Form.Get("svc") {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"session"}`))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	apiURL = server.URL
+
+	previousOpener := openBrowser
+	openBrowser = func(string) error {
+		t.Error("password login opened a browser")
+		return nil
+	}
+	defer func() { openBrowser = previousOpener }()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("WLN_PASSWORD", "s3cret")
+	var stdout, stderr bytes.Buffer
+	args := []string{"--config", configPath, "profile", "login", "hosting", "--server", server.URL, "--user", "operator", "--allow-http"}
+	if err := Run(context.Background(), args, &stdout, &stderr); err != nil {
+		t.Fatalf("Run error: %v\nstderr: %s", err, stderr.String())
+	}
+	if bytes.Contains(stdout.Bytes(), []byte("s3cret")) || bytes.Contains(stderr.Bytes(), []byte("s3cret")) {
+		t.Fatal("password leaked to command output")
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile := cfg.Profiles["hosting"]; profile.Token != token || profile.Server != server.URL {
+		t.Fatalf("saved profile = %#v", profile)
+	}
+
+	t.Setenv("WLN_PASSWORD", "wrong")
+	err = Run(context.Background(), args, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "Invalid user name or password") {
+		t.Fatalf("err = %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err = Run(context.Background(), []string{"--config", configPath, "profile", "login", "hosting", "--server", server.URL, "--allow-http"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--user is required") {
+		t.Fatalf("missing user error = %v", err)
+	}
+}
+
 func TestProfileReloginReusesSavedLoginSettings(t *testing.T) {
 	token := strings.Repeat("c", 72)
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -325,14 +400,108 @@ func TestProfileReloginReusesSavedLoginSettings(t *testing.T) {
 	}
 }
 
-func TestProfileLoginNewProfileRequiresServer(t *testing.T) {
+func TestProfileDeriveIssuesTokenWithoutPassword(t *testing.T) {
+	derived := strings.Repeat("d", 72)
+	var tokenParams map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch r.Form.Get("svc") {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"session"}`))
+		case "token/update":
+			_ = json.Unmarshal([]byte(r.Form.Get("params")), &tokenParams)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"h":%q,"fl":1792}`, derived)))
+		case "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := &config.File{DefaultProfile: "parent", Profiles: map[string]config.Profile{
+		"parent": {Server: server.URL, Token: strings.Repeat("a", 72), LoginServer: "https://hosting.wialon.com", Access: 5888},
+	}}
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), []string{
+		"--config", configPath, "profile", "derive", "agent",
+		"--access", "1792", "--items", "1001, 1002", "--duration", "720h",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, stderr.String())
+	}
+	if bytes.Contains(stdout.Bytes(), []byte(derived)) {
+		t.Fatal("derived token leaked to command output")
+	}
+	if tokenParams["callMode"] != "create" || tokenParams["fl"] != float64(1792) || tokenParams["dur"] != float64(2592000) {
+		t.Fatalf("token params = %#v", tokenParams)
+	}
+	if items, ok := tokenParams["items"].([]any); !ok || len(items) != 2 || items[0] != float64(1001) {
+		t.Fatalf("items = %#v", tokenParams["items"])
+	}
+	saved, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Profile{Server: server.URL, Token: derived, LoginServer: "https://hosting.wialon.com", Access: 1792}
+	if saved.Profiles["agent"] != want {
+		t.Fatalf("derived profile = %#v, want %#v", saved.Profiles["agent"], want)
+	}
+	if saved.DefaultProfile != "parent" {
+		t.Fatalf("default profile = %q", saved.DefaultProfile)
+	}
+
+	stdout.Reset()
+	if err := Run(context.Background(), []string{"--config", configPath, "profile", "derive", "bad", "--items", "1001,x"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "invalid item ID") {
+		t.Fatalf("items error = %v", err)
+	}
+}
+
+func TestProfilePasswordPrefersFileOverEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WLN_PASSWORD", "from-env")
+	password, err := profilePassword(false, path)
+	if err != nil || password != "from-file" {
+		t.Fatalf("password = %q, err = %v", password, err)
+	}
+	if password, err := profilePassword(false, ""); err != nil || password != "from-env" {
+		t.Fatalf("environment password = %q, err = %v", password, err)
+	}
+	if _, err := profilePassword(false, filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "read password file") {
+		t.Fatalf("missing file error = %v", err)
+	}
+}
+
+func TestProfileLoginDefaultsToWialonHosting(t *testing.T) {
+	var opened string
+	previousOpener := openBrowser
+	openBrowser = func(target string) error {
+		opened = target
+		return errors.New("browser disabled in tests")
+	}
+	defer func() { openBrowser = previousOpener }()
+
 	var stdout, stderr bytes.Buffer
 	err := Run(context.Background(), []string{
 		"--config", filepath.Join(t.TempDir(), "config.json"),
-		"profile", "login", "fresh",
+		"profile", "login", "fresh", "--callback-timeout", "50ms",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error()+stderr.String(), "--server is required") {
-		t.Fatalf("err = %v, stderr = %s", err, stderr.String())
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v", err)
+	}
+	login, parseErr := url.Parse(opened)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if login.Host != "hosting.wialon.com" || login.Path != "/login.html" {
+		t.Fatalf("login URL = %s, want hosting.wialon.com/login.html", opened)
 	}
 }
 

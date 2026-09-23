@@ -318,8 +318,23 @@ func TestUnitsConnectivityCommands(t *testing.T) {
 func TestAccessDeniedOffersReauthorizationAndRetries(t *testing.T) {
 	newToken := strings.Repeat("n", 72)
 	var renames []string
+	var apiURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		switch r.URL.Path {
+		case "/login.html":
+			fmt.Fprintf(w, `<script>o.api_url="%s";</script>`, apiURL)
+			return
+		case "/oauth/authorize.html":
+			if r.PostForm.Get("login") != "operator" || r.PostForm.Get("passw") != "s3cret" {
+				fmt.Fprint(w, `<div class='error'>Invalid user name or password</div>`)
+				return
+			}
+			w.Header().Set("Location", fmt.Sprintf("%s?access_token=%s&state=%s&wialon_sdk_url=%s",
+				r.PostForm.Get("redirect_uri"), newToken, r.URL.Query().Get("state"), apiURL))
+			w.WriteHeader(http.StatusFound)
+			return
+		}
 		switch r.Form.Get("svc") {
 		case "token/login":
 			var params map[string]any
@@ -382,6 +397,7 @@ func TestAccessDeniedOffersReauthorizationAndRetries(t *testing.T) {
 	}
 	defer func() { confirmReauthorization = previousConfirm }()
 
+	apiURL = server.URL
 	newConfig := func() string {
 		path := filepath.Join(t.TempDir(), "config.json")
 		cfg := &config.File{DefaultProfile: "editor", Profiles: map[string]config.Profile{
@@ -424,6 +440,35 @@ func TestAccessDeniedOffersReauthorizationAndRetries(t *testing.T) {
 			t.Fatal(err)
 		}
 		if profile := cfg.Profiles["editor"]; profile.Token != newToken || profile.Access != 5888 {
+			t.Fatalf("saved profile = %#v", profile)
+		}
+	})
+
+	t.Run("agent mode re-authorizes with WLN_PASSWORD", func(t *testing.T) {
+		questions, renames = nil, nil
+		configPath := filepath.Join(t.TempDir(), "config.json")
+		cfg := &config.File{DefaultProfile: "editor", Profiles: map[string]config.Profile{
+			"editor": {Server: server.URL, Token: "secret", LoginServer: server.URL, LoginUser: "operator", Access: 4864},
+		}}
+		if err := cfg.Save(configPath); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WLN_PASSWORD", "s3cret")
+		var out, errOut bytes.Buffer
+		if err := RunAgent(context.Background(), []string{"--config", configPath, "units", "update", "1001", "--name", "OSMOS_7x"}, &out, &errOut); err != nil {
+			t.Fatalf("Run: %v\n%s", err, errOut.String())
+		}
+		if len(questions) != 0 {
+			t.Fatalf("prompted in agent mode: %q", questions)
+		}
+		if !slices.Equal(renames, []string{"old-session", "new-session"}) {
+			t.Fatalf("renames = %v", renames)
+		}
+		saved, err := config.Load(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile := saved.Profiles["editor"]; profile.Token != newToken || profile.Access != 5888 {
 			t.Fatalf("saved profile = %#v", profile)
 		}
 	})

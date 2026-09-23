@@ -135,7 +135,8 @@ wln profile login hosting \
 ```
 
 `--server` is the base address of the Wialon installation containing
-`login.html`, not necessarily its Remote API address. Wialon Hosting returns
+`login.html`, not necessarily its Remote API address. It defaults to
+`https://hosting.wialon.com`, so only Wialon Local needs it spelled out. Wialon Hosting returns
 `wialon_sdk_url` in the callback, so a login through `hosting.wialon.com`
 automatically stores `hst-api.wialon.com`. Wialon Local falls back to the same
 installation base address. Passing `https://hst-api.wialon.com` to `--server`
@@ -182,6 +183,49 @@ wln profile login local \
 
 Use `--no-open` when the URL should be opened manually. The callback still must
 reach the same machine where `wln` is running.
+
+### Password login without a browser
+
+Unattended sessions can authorize with the account credentials instead of the
+browser flow. `wln` submits them to the same `oauth/authorize.html` form that
+`login.html` posts and stores only the issued token:
+
+```sh
+wln profile login agent --user operator --password-file ~/.config/wln/password
+pass show wialon | wln profile login agent --user operator --password-stdin
+```
+
+The password is never accepted as a command-line argument. `--password-file`
+is read first, then `WLN_PASSWORD`, then `--password-stdin`. A file keeps the
+secret out of the command line, the process environment, and the shell history,
+which matters when an agent composes the command. The password is never written
+to the configuration file or to the command output.
+
+When `WLN_PASSWORD` is set and the profile knows its Wialon user, an access
+error re-authorizes the profile without asking, so unattended `wlna` runs
+recover the missing flags on their own.
+
+Accounts protected by two-factor authentication cannot use this flow; `wln`
+reports that and the browser login stays available. Because it depends on the
+shape of Wialon's login form rather than on a documented API, prefer one
+browser login with the access flags the automation needs.
+
+### Derived profiles
+
+An authorized profile can issue narrower tokens through `token/update` without
+a password or a browser, and save each one as its own profile:
+
+```sh
+wln profile derive agent --access 1792
+wln --profile hosting profile derive fleet --items 1001,1002 --duration 720h
+```
+
+Wialon caps a new token at the access flags of the session that creates it, so
+the source profile must already hold them; `wln` offers to re-authorize it when
+it does not. The issued token is never printed. This is the recommended way to
+give an agent its own credentials: the password is used once, and a derived
+token can be narrowed to specific units and deleted without touching the
+account.
 
 ### Manual token fallback
 

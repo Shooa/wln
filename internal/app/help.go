@@ -26,7 +26,7 @@ func bareCommandHelpPath(args []string) []string {
 	switch strings.Join(args, " ") {
 	case "profile", "units", "messages", "api",
 		"profile login", "profile add", "profile use", "profile remove",
-		"units get", "units connection", "units create", "units update",
+		"profile derive", "units get", "units connection", "units create", "units update",
 		"messages get", "messages tail", "messages export", "api call":
 		return args
 	default:
@@ -104,7 +104,7 @@ func printCommandHelp(w io.Writer, path []string, agentMode bool) error {
 }
 
 func printAllHelp(w io.Writer, agentMode bool) error {
-	order := []string{"", "profile", "profile login", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
+	order := []string{"", "profile", "profile login", "profile derive", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w, "\n---"); err != nil {
@@ -169,6 +169,7 @@ CONVENTIONS
 
 SUBCOMMANDS
   login NAME   Open Wialon login in a browser and save the issued token
+  derive NAME  Issue a narrower token from another profile and save it
   add NAME     Save a token supplied via WLN_TOKEN or stdin
   list         List profiles without displaying tokens
   use NAME     Select the default profile
@@ -184,9 +185,12 @@ USAGE
 
 REQUIRED
   NAME               Local profile name
-  --server BASE_URL  Wialon installation URL containing login.html; required
-                     for a new profile. Re-login of an existing profile reuses
-                     its saved server, access flags, and subuser.
+
+OPTIONAL
+  --server BASE_URL  Wialon installation URL containing login.html. Defaults to
+                     https://hosting.wialon.com; a Wialon Local installation
+                     must be named explicitly. Re-login of an existing profile
+                     reuses its saved server, access flags, and subuser.
                      https://hst-api.wialon.com is treated as
                      https://hosting.wialon.com.
 
@@ -199,11 +203,48 @@ OPTIONS
   --duration DURATION       Token lifetime; 0 means unlimited
   --callback-timeout DURATION  Authorization timeout (default: 5m)
   --no-open                 Print URL instead of opening a browser
+  --password-stdin          Read the Wialon password from stdin and authorize
+                            without a browser; requires --user
+  --password-file PATH      Read the password from a file instead. Checked
+                            first, then WLN_PASSWORD, then --password-stdin.
+                            Accounts with two-factor authentication must use
+                            the browser flow.
   --allow-http              Permit HTTP for a trusted Wialon Local server
 
 EXAMPLES
   {cmd} profile login hosting --server https://hosting.wialon.com --default
-  {cmd} profile login hosting`,
+  {cmd} profile login hosting
+  pass show wialon | {cmd} profile login agent --server https://hosting.wialon.com \
+    --user operator --password-stdin`,
+
+	"profile derive": `{cmd} profile derive — issue a token from another profile
+
+USAGE
+  {cmd} [--profile SOURCE] profile derive NAME [--access FLAGS]
+                        [--duration DURATION] [--items ID,ID] [--operate-as USER]
+
+Creates a token through token/update using the source profile's session and
+saves it as a new profile on the same server. No password or browser is
+involved, and the issued token is never printed.
+
+Wialon caps the new token at the source session's access flags, so a source
+profile authorized with fewer flags cannot widen them. When it lacks them,
+{cmd} re-authorizes the source profile first.
+
+REQUIRED
+  NAME                  Name of the profile to create
+
+OPTIONS
+  --access FLAGS        Decimal token access flags; default is the source
+                        profile's access
+  --duration DURATION   Token lifetime; 0 means unlimited
+  --items ID,ID         Restrict the token to these item IDs
+  --operate-as USER     Open API sessions as a subuser
+  --default             Make this the default profile
+
+EXAMPLES
+  {cmd} profile derive agent --access 1792
+  {cmd} --profile hosting profile derive fleet --items 1001,1002 --duration 720h`,
 
 	"profile add": `{cmd} profile add — save an existing access token
 
@@ -373,7 +414,8 @@ operation. This requires the 0x1000 token access flag (for example
 --access 5888) and the Edit connectivity settings right to the unit.
 
 When the token lacks a required flag, wln offers to re-authorize the profile in
-the browser and retries; wlna reports the profile login command instead.
+the browser and retries; wlna reports the profile login command instead. With
+WLN_PASSWORD set, both re-authorize without a browser and without asking.
 
 EXAMPLES
   {cmd} units update 1001 --name "Truck 02"
