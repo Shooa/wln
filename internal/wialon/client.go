@@ -520,8 +520,9 @@ type UnitCommand struct {
 	JSONParam  bool   `json:"json_param,omitempty"`
 }
 
-// UnitCommands lists the commands defined for a unit. Data flag 0x200 makes
-// core/search_item return them in "cml".
+// UnitCommands lists the commands defined for a unit. Data flag 0x80000 makes
+// core/search_item return them in "cml"; 0x200 does not, despite what the data
+// format page suggests.
 func (c *Client) UnitCommands(ctx context.Context, unitID int64) ([]UnitCommand, error) {
 	if unitID <= 0 {
 		return nil, fmt.Errorf("unit ID must be positive, got %d", unitID)
@@ -531,7 +532,7 @@ func (c *Client) UnitCommands(ctx context.Context, unitID int64) ([]UnitCommand,
 			Commands json.RawMessage `json:"cml"`
 		} `json:"item"`
 	}
-	if err := c.Call(ctx, "core/search_item", map[string]any{"id": unitID, "flags": 1 + 0x200}, &response); err != nil {
+	if err := c.Call(ctx, "core/search_item", map[string]any{"id": unitID, "flags": 1 + 0x80000}, &response); err != nil {
 		return nil, fmt.Errorf("list unit commands: %w", err)
 	}
 	if response.Item == nil {

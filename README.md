@@ -382,9 +382,10 @@ object, `--link-type` overrides the channel taken from the command definition,
 `--phone primary|secondary` restricts SMS commands, and `--timeout` is the
 number of seconds Wialon waits for the device.
 
-Commands need the `0x2000` token flag (for example `--access 7936`) and the
-**Send commands** right to the unit. The list is empty both when the unit has
-no commands and when the token lacks the flag.
+Listing needs only view access; the definitions live in the unit itself, so a
+unit without commands configured in Wialon lists nothing. Sending needs the
+`0x2000` token flag (for example `--access 7936`) and the **Send commands**
+right to the unit.
 
 ### Unit status and stale positions
 

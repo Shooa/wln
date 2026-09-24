@@ -388,17 +388,18 @@ func runUnitsCommands(ctx context.Context, args []string, opts options) error {
 	if err := rejectUnexpectedArgs(fs, opts, "units commands"); err != nil {
 		return err
 	}
-	return withAccess(ctx, opts, accessExecCommands, func(client *wialon.Client) error {
+	// Reading the definitions needs only view access; sending them does not.
+	return withClient(ctx, opts, func(client *wialon.Client) error {
 		unit, err := resolveUnit(ctx, client, unitRef)
 		if err != nil {
 			return err
 		}
 		commands, err := client.UnitCommands(ctx, unit.ID)
 		if err != nil {
-			return explainCommandAccess(err)
+			return err
 		}
 		if len(commands) == 0 && !opts.agentMode {
-			fmt.Fprintf(opts.stderr, "Unit %s (id=%d) reports no commands; the unit may have none defined, or the token may lack access flag 0x2000.\n", unit.Name, unit.ID)
+			fmt.Fprintf(opts.stderr, "Unit %s (id=%d) has no commands defined.\n", unit.Name, unit.ID)
 		}
 		return printUnitCommands(commands, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
 	})

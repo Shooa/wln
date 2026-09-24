@@ -437,9 +437,8 @@ OPTIONS
 Each command is listed with its exact name, type, link type, preset parameters,
 and phone restriction. Use the exact name with '{cmd} units command'.
 
-Reading definitions and sending commands need the 0x2000 token access flag (for
-example --access 7936) and the Send commands right to the unit. A unit with no
-commands and a token without the flag both look like an empty list.
+Listing needs only view access. Sending a command needs the 0x2000 token access
+flag (for example --access 7936) and the Send commands right to the unit.
 
 EXAMPLE
   {cmd} units commands 1001`,

@@ -575,7 +575,7 @@ func commandUnitServer(t *testing.T, cml string, loadReplies []string, exec *[]m
 		case "token/login":
 			_, _ = w.Write([]byte(`{"eid":"session"}`))
 		case "core/search_item":
-			if strings.Contains(params, `"flags":513`) {
+			if strings.Contains(params, `"flags":524289`) {
 				_, _ = fmt.Fprintf(w, `{"item":{"id":1001,"cml":%s}}`, cml)
 				return
 			}
