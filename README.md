@@ -372,8 +372,10 @@ the device reports back later in a command message (`ucr`). Without `--wait`,
 `wln messages tail 1001 --all-types`.
 
 With `--wait`, `wln` snapshots the unit's command messages before sending,
-polls them every `--poll` (2s by default), prints the first answer that matches
-the command, and exits non-zero when none arrives in time. The unit is still
+polls them every `--poll` (2s by default), prints the first answered message
+that matches the command, and exits non-zero when none arrives in time. A
+record that only says the command was accepted (no result time) is reported
+just if nothing better arrives before the deadline. The unit is still
 free to answer later — the timeout means only that the answer did not arrive
 within the waiting period.
 

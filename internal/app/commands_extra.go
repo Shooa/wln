@@ -599,6 +599,7 @@ func waitForCommandResult(ctx context.Context, client *wialon.Client, unitID int
 		seen = make(map[string]bool)
 	}
 	deadline := time.Now().Add(wait)
+	var accepted map[string]any
 	for {
 		pause := poll
 		if remaining := time.Until(deadline); remaining < pause {
@@ -623,12 +624,20 @@ func waitForCommandResult(ctx context.Context, client *wialon.Client, unitID int
 				continue
 			}
 			seen[key] = true
-			if commandResultMatches(message, name) {
+			if !commandResultMatches(message, name) {
+				continue
+			}
+			// "rt" is the time the result came back. A record without it only
+			// says the command was accepted, so keep waiting for a better one.
+			if int64Value(message["rt"]) != 0 {
 				return message, nil
+			}
+			if accepted == nil {
+				accepted = message
 			}
 		}
 		if !time.Now().Before(deadline) {
-			return nil, nil
+			return accepted, nil
 		}
 	}
 }
@@ -671,16 +680,26 @@ func printCommandResult(unit wialon.Unit, name string, message map[string]any, f
 			if err != nil {
 				return err
 			}
-			params = string(data)
+			if string(data) != "{}" {
+				params = string(data)
+			}
 		}
-		row := []string{timestamp, textValue(message["ca"]), textValue(message["cn"]), textValue(message["lt"]), textValue(message["ln"]), params}
+		// A device that answers without payload still reports when the result
+		// arrived, which is the only outcome Wialon records for many commands.
+		answered := "pending"
+		if seconds := int64Value(message["rt"]); seconds != 0 {
+			answered = time.Unix(seconds, 0).Local().Format(time.RFC3339)
+		}
+		row := []string{timestamp, textValue(message["ca"]), textValue(message["cn"]), textValue(message["lt"]), textValue(message["cp"]), textValue(message["ln"]), answered, params}
 		return texttable.WriteAdaptive(out, notice, []texttable.Column{
-			{Header: "TIME", MinWidth: 16},
+			{Header: "SENT", MinWidth: 16},
 			{Header: "COMMAND", MinWidth: 12},
-			{Header: "TYPE", MinWidth: 8, HidePriority: 2, HideIfEmpty: true},
-			{Header: "LINK", MinWidth: 4, HidePriority: 2, HideIfEmpty: true},
+			{Header: "TYPE", MinWidth: 8, HidePriority: 3, HideIfEmpty: true},
+			{Header: "LINK", MinWidth: 4, HidePriority: 3, HideIfEmpty: true},
+			{Header: "PARAMETER", MinWidth: 9, HidePriority: 2, HideIfEmpty: true},
 			{Header: "USER", MinWidth: 6, HidePriority: 1, HideIfEmpty: true},
-			{Header: "RESULT", MinWidth: 16},
+			{Header: "ANSWERED", MinWidth: 16},
+			{Header: "RESULT", MinWidth: 6, HideIfEmpty: true},
 		}, [][]string{row}, tableWidth)
 	default:
 		return fmt.Errorf("unsupported format %q", format)

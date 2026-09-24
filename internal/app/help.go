@@ -464,6 +464,11 @@ command message ('ucr'). Without --wait the command is only queued; with --wait
 the unit's command messages are polled until the matching answer arrives, and
 the exit status is non-zero if none does within the given time.
 
+The answer carries the time the result came back ('rt'), shown as ANSWERED, and
+whatever payload the device returned. A record without a result time means the
+command was accepted but not answered yet; it is reported only if nothing
+better arrives before the deadline.
+
 Sending requires the 0x2000 token access flag (for example --access 7936) and
 the Send commands right to the unit. When the token lacks it, wln offers to
 re-authorize the profile in the browser and retries; wlna reports the profile

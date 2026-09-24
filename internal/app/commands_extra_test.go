@@ -677,9 +677,11 @@ func TestUnitsCommandQueuesWithoutWaiting(t *testing.T) {
 
 func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
 	var exec []map[string]any
+	// The first poll sees only the accepted record; the answered one follows.
 	server := commandUnitServer(t, testUnitCommands, []string{
-		`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","p":{"text":"old"}}]}`,
-		`{"count":2,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","p":{"text":"old"}},{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","lt":"tcp","ln":"operator","p":{"text":"executed"}}]}`,
+		`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","rt":101,"p":{"text":"old"}}]}`,
+		`{"count":2,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","rt":101,"p":{"text":"old"}},{"t":200,"tp":"ucr","ca":"Block engine","rt":0,"p":{}}]}`,
+		`{"count":3,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","rt":101,"p":{"text":"old"}},{"t":200,"tp":"ucr","ca":"Block engine","rt":0,"p":{}},{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","cp":"setdigout 1","lt":"tcp","ln":"operator","rt":201,"p":{"text":"executed"}}]}`,
 	}, &exec)
 	defer server.Close()
 	configPath := testProfile(t, server.URL)
@@ -696,7 +698,7 @@ func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("decode result: %v\n%s", err, stdout.String())
 	}
-	if !payload.OK || payload.Result["t"] != float64(200) {
+	if !payload.OK || payload.Result["t"] != float64(200) || payload.Result["rt"] != float64(201) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if params, ok := payload.Result["p"].(map[string]any); !ok || params["text"] != "executed" {
@@ -710,7 +712,7 @@ func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
 	// repeats, so no message would look new any more.
 	human := commandUnitServer(t, testUnitCommands, []string{
 		`{"count":0,"messages":[]}`,
-		`{"count":1,"messages":[{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","lt":"tcp","ln":"operator","p":{"text":"executed"}}]}`,
+		`{"count":1,"messages":[{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","cp":"setdigout 1","lt":"tcp","ln":"operator","rt":201,"p":{"text":"executed"}}]}`,
 	}, &exec)
 	defer human.Close()
 	stdout.Reset()
@@ -718,7 +720,7 @@ func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
 	if err := Run(context.Background(), []string{"--wide", "--config", testProfile(t, human.URL), "units", "command", "1001", "Block engine", "--wait", "5s", "--poll", "500ms"}, &stdout, &stderr); err != nil {
 		t.Fatalf("Run: %v\n%s", err, stderr.String())
 	}
-	for _, want := range []string{"COMMAND", "RESULT", "executed", "operator"} {
+	for _, want := range []string{"COMMAND", "ANSWERED", "RESULT", "executed", "operator", "setdigout 1"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("table does not contain %q:\n%s", want, stdout.String())
 		}
@@ -727,7 +729,7 @@ func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
 
 func TestUnitsCommandReportsUnknownNamesAndMissingResults(t *testing.T) {
 	var exec []map[string]any
-	server := commandUnitServer(t, testUnitCommands, []string{`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine"}]}`}, &exec)
+	server := commandUnitServer(t, testUnitCommands, []string{`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","rt":101}]}`}, &exec)
 	defer server.Close()
 	configPath := testProfile(t, server.URL)
 
