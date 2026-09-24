@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -506,6 +508,143 @@ func (c *Client) CreateToken(ctx context.Context, spec TokenSpec) (string, error
 	return response.Token, nil
 }
 
+// UnitCommand is one command definition attached to a unit.
+type UnitCommand struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	LinkType   string `json:"link_type"`
+	Param      string `json:"param,omitempty"`
+	Access     int64  `json:"access,omitempty"`
+	PhoneFlags int64  `json:"phone_flags,omitempty"`
+	JSONParam  bool   `json:"json_param,omitempty"`
+}
+
+// UnitCommands lists the commands defined for a unit. Data flag 0x200 makes
+// core/search_item return them in "cml".
+func (c *Client) UnitCommands(ctx context.Context, unitID int64) ([]UnitCommand, error) {
+	if unitID <= 0 {
+		return nil, fmt.Errorf("unit ID must be positive, got %d", unitID)
+	}
+	var response struct {
+		Item *struct {
+			Commands json.RawMessage `json:"cml"`
+		} `json:"item"`
+	}
+	if err := c.Call(ctx, "core/search_item", map[string]any{"id": unitID, "flags": 1 + 0x200}, &response); err != nil {
+		return nil, fmt.Errorf("list unit commands: %w", err)
+	}
+	if response.Item == nil {
+		return nil, fmt.Errorf("%w: %d", ErrUnitNotFound, unitID)
+	}
+	return decodeUnitCommands(response.Item.Commands)
+}
+
+// decodeUnitCommands reads "cml", which Wialon sends either as an array or as
+// an object keyed by the command's sequence number.
+func decodeUnitCommands(raw json.RawMessage) ([]UnitCommand, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		var keyed map[string]map[string]any
+		if err := json.Unmarshal(raw, &keyed); err != nil {
+			return nil, fmt.Errorf("decode unit commands: %w", err)
+		}
+		keys := make([]string, 0, len(keyed))
+		for key := range keyed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			entries = append(entries, keyed[key])
+		}
+	}
+	commands := make([]UnitCommand, 0, len(entries))
+	for _, entry := range entries {
+		commands = append(commands, UnitCommand{
+			ID:         fieldInt(entry["id"]),
+			Name:       fieldText(entry["n"]),
+			Type:       fieldText(entry["c"]),
+			LinkType:   fieldText(entry["l"]),
+			Param:      fieldText(entry["p"]),
+			Access:     fieldInt(entry["a"]),
+			PhoneFlags: fieldInt(entry["f"]),
+			JSONParam:  fieldInt(entry["jp"]) != 0,
+		})
+	}
+	sort.Slice(commands, func(i, j int) bool {
+		return strings.ToLower(commands[i].Name) < strings.ToLower(commands[j].Name)
+	})
+	return commands, nil
+}
+
+func fieldText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(typed)
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+}
+
+func fieldInt(value any) int64 {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed)
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
+}
+
+// ExecCommandSpec describes one unit/exec_cmd request.
+type ExecCommandSpec struct {
+	UnitID   int64
+	Name     string
+	LinkType string
+	Param    string
+	Timeout  int64 // seconds Wialon waits for the device
+	Flags    int64 // 0 any phone, 0x1 primary, 0x2 secondary, 0x10 JSON parameter
+}
+
+// ExecCommand queues a command for a unit. Wialon answers as soon as the
+// command is accepted; the device reports back asynchronously in a command
+// message (type "ucr").
+func (c *Client) ExecCommand(ctx context.Context, spec ExecCommandSpec) error {
+	if spec.UnitID <= 0 {
+		return fmt.Errorf("unit ID must be positive, got %d", spec.UnitID)
+	}
+	if strings.TrimSpace(spec.Name) == "" {
+		return errors.New("command name must not be empty")
+	}
+	params := map[string]any{
+		"itemId": spec.UnitID, "commandName": spec.Name, "linkType": spec.LinkType,
+		"param": spec.Param, "timeout": spec.Timeout, "flags": spec.Flags,
+	}
+	var response json.RawMessage
+	if err := c.Call(ctx, "unit/exec_cmd", params, &response); err != nil {
+		return fmt.Errorf("execute command %q: %w", spec.Name, err)
+	}
+	return nil
+}
+
 func (c *Client) RenameItem(ctx context.Context, itemID int64, name string) (string, error) {
 	params := map[string]any{"itemId": itemID, "name": name}
 	var response struct {
@@ -538,11 +677,28 @@ func (c *Client) LoadMessages(ctx context.Context, unitID int64, from, to int64,
 	return response, nil
 }
 
+// Message type bits of the "flags" field, selected with flagsMask 0xFF00:
+// 0x0000 data, 0x0100 SMS, 0x0200 command, 0x0600 event.
+const (
+	messageTypeCommand = 0x200
+	messageTypeMask    = 0xFF00
+)
+
 func (c *Client) LoadLast(ctx context.Context, unitID, lastTime int64, count int, allTypes bool) (LoadResult, error) {
-	flags, mask := 0, 65280
+	mask := messageTypeMask
 	if allTypes {
 		mask = 0
 	}
+	return c.loadLast(ctx, unitID, lastTime, count, 0, mask)
+}
+
+// LoadLastCommands returns the latest command messages (type "ucr") of a unit,
+// which is how Wialon reports the outcome of unit/exec_cmd.
+func (c *Client) LoadLastCommands(ctx context.Context, unitID, lastTime int64, count int) (LoadResult, error) {
+	return c.loadLast(ctx, unitID, lastTime, count, messageTypeCommand, messageTypeMask)
+}
+
+func (c *Client) loadLast(ctx context.Context, unitID, lastTime int64, count, flags, mask int) (LoadResult, error) {
 	params := map[string]any{
 		"itemId": unitID, "lastTime": lastTime, "lastCount": count,
 		"flags": flags, "flagsMask": mask, "loadCount": count,

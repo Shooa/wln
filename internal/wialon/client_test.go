@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -248,4 +249,28 @@ func contains(text, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestDecodeUnitCommandsAcceptsBothShapes(t *testing.T) {
+	want := []UnitCommand{
+		{ID: 1, Name: "Block engine", Type: "block_engine", LinkType: "tcp", Param: "setdigout 1", Access: 256, PhoneFlags: 1, JSONParam: true},
+		{ID: 2, Name: "Query position", Type: "query_pos"},
+	}
+	for _, raw := range []string{
+		`[{"id":2,"n":"Query position","c":"query_pos"},{"id":1,"n":"Block engine","c":"block_engine","l":"tcp","p":"setdigout 1","a":256,"f":1,"jp":1}]`,
+		`{"2":{"id":2,"n":"Query position","c":"query_pos"},"1":{"id":1,"n":"Block engine","c":"block_engine","l":"tcp","p":"setdigout 1","a":256,"f":1,"jp":1}}`,
+	} {
+		commands, err := decodeUnitCommands([]byte(raw))
+		if err != nil {
+			t.Fatalf("decodeUnitCommands(%s): %v", raw, err)
+		}
+		if !reflect.DeepEqual(commands, want) {
+			t.Errorf("commands = %#v, want %#v", commands, want)
+		}
+	}
+	for _, raw := range []string{"", "null"} {
+		if commands, err := decodeUnitCommands([]byte(raw)); err != nil || commands != nil {
+			t.Errorf("decodeUnitCommands(%q) = %#v, %v", raw, commands, err)
+		}
+	}
 }

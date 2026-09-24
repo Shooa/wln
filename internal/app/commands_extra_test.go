@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -558,5 +559,192 @@ func TestAgentHelpIsJSON(t *testing.T) {
 	}
 	if help["command"] != "units get" || !strings.Contains(help["help"].(string), "--fields") {
 		t.Fatalf("help = %#v", help)
+	}
+}
+
+// commandUnitServer answers the calls the unit command tests need. loadReplies
+// supplies the messages/load_last responses in order; the last one repeats.
+func commandUnitServer(t *testing.T, cml string, loadReplies []string, exec *[]map[string]any) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	loads := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		params := r.Form.Get("params")
+		switch r.Form.Get("svc") {
+		case "token/login":
+			_, _ = w.Write([]byte(`{"eid":"session"}`))
+		case "core/search_item":
+			if strings.Contains(params, `"flags":513`) {
+				_, _ = fmt.Fprintf(w, `{"item":{"id":1001,"cml":%s}}`, cml)
+				return
+			}
+			_, _ = w.Write([]byte(`{"item":{"id":1001,"nm":"Truck","uid":"111","hw":1}}`))
+		case "unit/exec_cmd":
+			decoded := map[string]any{}
+			if err := json.Unmarshal([]byte(params), &decoded); err != nil {
+				t.Errorf("decode exec_cmd params: %v", err)
+			}
+			mu.Lock()
+			*exec = append(*exec, decoded)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{}`))
+		case "messages/load_last":
+			mu.Lock()
+			reply := loadReplies[min(loads, len(loadReplies)-1)]
+			loads++
+			mu.Unlock()
+			_, _ = w.Write([]byte(reply))
+		case "messages/unload", "core/logout":
+			_, _ = w.Write([]byte(`{"error":0}`))
+		default:
+			t.Errorf("unexpected service %q", r.Form.Get("svc"))
+		}
+	}))
+}
+
+const testUnitCommands = `{"2":{"id":2,"n":"Query position","c":"query_pos","l":"","p":"","a":0,"f":0},` +
+	`"1":{"id":1,"n":"Block engine","c":"block_engine","l":"tcp","p":"setdigout 1","a":256,"f":1}}`
+
+func TestUnitsCommandsListsDefinitions(t *testing.T) {
+	var exec []map[string]any
+	server := commandUnitServer(t, testUnitCommands, []string{`{"count":0,"messages":[]}`}, &exec)
+	defer server.Close()
+	configPath := testProfile(t, server.URL)
+
+	var stdout, stderr bytes.Buffer
+	if err := RunAgent(context.Background(), []string{"--config", configPath, "units", "commands", "1001"}, &stdout, &stderr); err != nil {
+		t.Fatalf("RunAgent: %v\n%s", err, stderr.String())
+	}
+	var commands []wialon.UnitCommand
+	if err := json.Unmarshal(stdout.Bytes(), &commands); err != nil {
+		t.Fatalf("decode commands: %v\n%s", err, stdout.String())
+	}
+	want := []wialon.UnitCommand{
+		{ID: 1, Name: "Block engine", Type: "block_engine", LinkType: "tcp", Param: "setdigout 1", Access: 256, PhoneFlags: 1},
+		{ID: 2, Name: "Query position", Type: "query_pos"},
+	}
+	if !slices.Equal(commands, want) {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"--wide", "--config", configPath, "units", "commands", "1001"}, &stdout, &stderr); err != nil {
+		t.Fatalf("Run: %v\n%s", err, stderr.String())
+	}
+	for _, want := range []string{"COMMAND", "Block engine", "block_engine", "setdigout 1", "primary", "Query position"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("table does not contain %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestUnitsCommandQueuesWithoutWaiting(t *testing.T) {
+	var exec []map[string]any
+	server := commandUnitServer(t, testUnitCommands, []string{`{"count":0,"messages":[]}`}, &exec)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := RunAgent(context.Background(), []string{"--config", testProfile(t, server.URL), "units", "command", "1001", "block engine"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunAgent: %v\n%s", err, stderr.String())
+	}
+	var payload struct {
+		OK      bool   `json:"ok"`
+		UnitID  int64  `json:"unit_id"`
+		Command string `json:"command"`
+		Queued  bool   `json:"queued"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	if !payload.OK || !payload.Queued || payload.UnitID != 1001 || payload.Command != "Block engine" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if len(exec) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(exec))
+	}
+	for field, want := range map[string]any{
+		"itemId": float64(1001), "commandName": "Block engine", "linkType": "tcp",
+		"param": "", "timeout": float64(60), "flags": float64(0),
+	} {
+		if exec[0][field] != want {
+			t.Errorf("exec_cmd %s = %v, want %v", field, exec[0][field], want)
+		}
+	}
+}
+
+func TestUnitsCommandWaitsForTheResultMessage(t *testing.T) {
+	var exec []map[string]any
+	server := commandUnitServer(t, testUnitCommands, []string{
+		`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","p":{"text":"old"}}]}`,
+		`{"count":2,"messages":[{"t":100,"tp":"ucr","ca":"Block engine","p":{"text":"old"}},{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","lt":"tcp","ln":"operator","p":{"text":"executed"}}]}`,
+	}, &exec)
+	defer server.Close()
+	configPath := testProfile(t, server.URL)
+
+	var stdout, stderr bytes.Buffer
+	err := RunAgent(context.Background(), []string{"--config", configPath, "units", "command", "1001", "Block engine", "--param", "setdigout 1", "--phone", "primary", "--wait", "5s", "--poll", "500ms"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunAgent: %v\n%s", err, stderr.String())
+	}
+	var payload struct {
+		OK     bool           `json:"ok"`
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	if !payload.OK || payload.Result["t"] != float64(200) {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if params, ok := payload.Result["p"].(map[string]any); !ok || params["text"] != "executed" {
+		t.Fatalf("result params = %#v", payload.Result["p"])
+	}
+	if len(exec) != 1 || exec[0]["param"] != "setdigout 1" || exec[0]["flags"] != float64(1) {
+		t.Fatalf("exec calls = %#v", exec)
+	}
+
+	// A second server: the first one has already served its last reply, which
+	// repeats, so no message would look new any more.
+	human := commandUnitServer(t, testUnitCommands, []string{
+		`{"count":0,"messages":[]}`,
+		`{"count":1,"messages":[{"t":200,"tp":"ucr","ca":"Block engine","cn":"block_engine","lt":"tcp","ln":"operator","p":{"text":"executed"}}]}`,
+	}, &exec)
+	defer human.Close()
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"--wide", "--config", testProfile(t, human.URL), "units", "command", "1001", "Block engine", "--wait", "5s", "--poll", "500ms"}, &stdout, &stderr); err != nil {
+		t.Fatalf("Run: %v\n%s", err, stderr.String())
+	}
+	for _, want := range []string{"COMMAND", "RESULT", "executed", "operator"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("table does not contain %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestUnitsCommandReportsUnknownNamesAndMissingResults(t *testing.T) {
+	var exec []map[string]any
+	server := commandUnitServer(t, testUnitCommands, []string{`{"count":1,"messages":[{"t":100,"tp":"ucr","ca":"Block engine"}]}`}, &exec)
+	defer server.Close()
+	configPath := testProfile(t, server.URL)
+
+	var stdout, stderr bytes.Buffer
+	err := RunAgent(context.Background(), []string{"--config", configPath, "units", "command", "1001", "Unblock engine"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `"Block engine", "Query position"`) {
+		t.Fatalf("error = %v", err)
+	}
+	if len(exec) != 0 {
+		t.Fatalf("unknown command was sent: %#v", exec)
+	}
+
+	err = RunAgent(context.Background(), []string{"--config", configPath, "units", "command", "1001", "Block engine", "--wait", "1s", "--poll", "500ms"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "no result message arrived within 1s") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(exec) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(exec))
 	}
 }

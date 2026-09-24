@@ -162,11 +162,14 @@ wln profile login editor \
   --access 5888
 ```
 
-When `units create` or `units update` is denied because the profile token lacks
-the flags it needs, `wln` asks in an interactive terminal whether to
-re-authorize the profile in the browser with those flags added, then retries
-the command. `wlna` and non-interactive runs never prompt; the error names the
-`profile login` command to run instead.
+Sending commands is a separate scope: add `0x2000` (for example `--access
+7936`) for `units commands` and `units command`.
+
+When `units create`, `units update`, or `units command` is denied because the
+profile token lacks the flags it needs, `wln` asks in an interactive terminal
+whether to re-authorize the profile in the browser with those flags added, then
+retries the command. `wlna` and non-interactive runs never prompt; the error
+names the `profile login` command to run instead.
 
 The authenticated user must also have the **Edit connectivity settings** right
 to the unit. The default token duration is unlimited (`0`), though Wialon
@@ -346,6 +349,42 @@ partial result.
 `--name` renames the unit through `item/update_name` (4–50 characters). It
 needs the `0x400` token flag, included by default, and the **Rename** right to
 the unit.
+
+### Send commands to a device
+
+List the commands a unit actually has before sending one, so the exact name is
+never guessed:
+
+```sh
+wln units commands 1001
+```
+
+```sh
+wln units command 1001 "Query position"
+wln units command 1001 "Block engine" --wait 60s
+wln units command 1001 "Custom message" --param "setdigout 1" --wait 2m
+```
+
+Wialon queues commands through `unit/exec_cmd` and executes them
+asynchronously: the API call returns as soon as the command is accepted, and
+the device reports back later in a command message (`ucr`). Without `--wait`,
+`wln` only queues and reports that; results can then be watched with
+`wln messages tail 1001 --all-types`.
+
+With `--wait`, `wln` snapshots the unit's command messages before sending,
+polls them every `--poll` (2s by default), prints the first answer that matches
+the command, and exits non-zero when none arrives in time. The unit is still
+free to answer later — the timeout means only that the answer did not arrive
+within the waiting period.
+
+`--param` passes a parameter to the device, `--json-param` marks it as a JSON
+object, `--link-type` overrides the channel taken from the command definition,
+`--phone primary|secondary` restricts SMS commands, and `--timeout` is the
+number of seconds Wialon waits for the device.
+
+Commands need the `0x2000` token flag (for example `--access 7936`) and the
+**Send commands** right to the unit. The list is empty both when the unit has
+no commands and when the token lacks the flag.
 
 ### Unit status and stale positions
 
@@ -531,6 +570,7 @@ follow their positional argument, matching the examples above.
 - [`core/create_unit`](https://help.wialon.com/en/api/user-guide/api-reference/core/create_unit)
 - [`item/update_name`](https://help.wialon.com/en/api/user-guide/api-reference/item/update_name)
 - [`unit/update_device_type`](https://help.wialon.com/en/api/user-guide/api-reference/unit/update_device_type)
+- [`unit/exec_cmd`](https://help.wialon.com/en/api/user-guide/api-reference/unit/exec_cmd)
 - [`messages/load_interval`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_interval)
 - [`messages/load_last`](https://help.wialon.com/en/api/user-guide/api-reference/messages/load_last)
 - [`messages/get_messages`](https://help.wialon.com/en/api/user-guide/api-reference/messages/get_messages)

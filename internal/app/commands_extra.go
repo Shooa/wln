@@ -368,6 +368,342 @@ func runUnitsCreate(ctx context.Context, args []string, opts options) error {
 	})
 }
 
+// Sending commands and reading their definitions need the 0x2000 access flag.
+const accessExecCommands int64 = 0x2000
+
+// commandBatch bounds how many command messages are read per poll. Replies are
+// recognized by not being in the batch loaded before the command was sent.
+const commandBatch = 50
+
+func runUnitsCommands(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units commands", "UNIT is required")
+	}
+	unitRef, args := args[0], args[1:]
+	fs := newCommandFlagSet("units commands", "units commands", opts)
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units commands"); err != nil {
+		return err
+	}
+	return withAccess(ctx, opts, accessExecCommands, func(client *wialon.Client) error {
+		unit, err := resolveUnit(ctx, client, unitRef)
+		if err != nil {
+			return err
+		}
+		commands, err := client.UnitCommands(ctx, unit.ID)
+		if err != nil {
+			return explainCommandAccess(err)
+		}
+		if len(commands) == 0 && !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Unit %s (id=%d) reports no commands; the unit may have none defined, or the token may lack access flag 0x2000.\n", unit.Name, unit.ID)
+		}
+		return printUnitCommands(commands, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func printUnitCommands(commands []wialon.UnitCommand, format string, compact bool, out, notice io.Writer, tableWidth int) error {
+	switch format {
+	case "json":
+		if commands == nil {
+			commands = []wialon.UnitCommand{}
+		}
+		return writeJSON(out, commands, compact)
+	case "table":
+		rows := make([][]string, 0, len(commands))
+		for _, command := range commands {
+			rows = append(rows, []string{command.Name, command.Type, command.LinkType, command.Param, phoneText(command.PhoneFlags)})
+		}
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "COMMAND", MinWidth: 16},
+			{Header: "TYPE", MinWidth: 10},
+			{Header: "LINK", MinWidth: 4},
+			{Header: "PARAMETERS", MinWidth: 12, HidePriority: 1, HideIfEmpty: true},
+			{Header: "PHONE", MinWidth: 5, HidePriority: 2, HideIfEmpty: true},
+		}, rows, tableWidth)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func phoneText(flags int64) string {
+	switch flags & 0x3 {
+	case 0x1:
+		return "primary"
+	case 0x2:
+		return "secondary"
+	default:
+		return ""
+	}
+}
+
+func runUnitsCommand(ctx context.Context, args []string, opts options) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units command", "UNIT is required")
+	}
+	unitRef, args := args[0], args[1:]
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return commandError(opts, "units command", "NAME is required")
+	}
+	commandName, args := args[0], args[1:]
+	fs := newCommandFlagSet("units command", "units command", opts)
+	param := fs.String("param", "", "parameter passed to the device")
+	jsonParam := fs.Bool("json-param", false, "send --param as a JSON object")
+	linkType := fs.String("link-type", "", "channel to send through; default is the command's own")
+	phone := fs.String("phone", "any", "any, primary, or secondary phone for SMS commands")
+	timeout := fs.Int64("timeout", 60, "seconds Wialon waits for the device")
+	var wait flexibleDuration
+	fs.Var(&wait, "wait", "wait this long for the result message, e.g. 60s")
+	poll := fs.Duration("poll", 2*time.Second, "poll interval while waiting")
+	format := fs.String("format", defaultFormat(opts, "table", "json"), "table or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := rejectUnexpectedArgs(fs, opts, "units command"); err != nil {
+		return err
+	}
+	if *timeout < 0 || *timeout > 3600 {
+		return errors.New("--timeout must be between 0 and 3600 seconds")
+	}
+	if wait.Duration < 0 {
+		return errors.New("--wait must not be negative")
+	}
+	if *poll < 500*time.Millisecond {
+		return errors.New("--poll must be at least 500ms")
+	}
+	flags, err := commandPhoneFlags(*phone)
+	if err != nil {
+		return err
+	}
+	if *jsonParam {
+		if !json.Valid([]byte(*param)) {
+			return errors.New("--json-param requires --param to contain valid JSON")
+		}
+		flags |= 0x10
+	}
+	return withAccess(ctx, opts, accessExecCommands, func(client *wialon.Client) error {
+		unit, err := resolveUnit(ctx, client, unitRef)
+		if err != nil {
+			return err
+		}
+		name, link := commandName, strings.TrimSpace(*linkType)
+		// The definitions are advisory: when Wialon does not return them, the
+		// name typed by the user is sent as is and the API reports any mistake.
+		if definitions, err := client.UnitCommands(ctx, unit.ID); err == nil && len(definitions) > 0 {
+			definition, ok := findUnitCommand(definitions, commandName)
+			if !ok {
+				return unknownCommandError(unit, commandName, definitions)
+			}
+			name = definition.Name
+			if link == "" {
+				link = definition.LinkType
+			}
+		}
+		var seen map[string]bool
+		if wait.Duration > 0 {
+			if seen, err = commandMessages(ctx, client, unit.ID); err != nil {
+				return err
+			}
+			defer client.UnloadMessages(context.WithoutCancel(ctx))
+		}
+		spec := wialon.ExecCommandSpec{
+			UnitID: unit.ID, Name: name, LinkType: link,
+			Param: *param, Timeout: *timeout, Flags: flags,
+		}
+		if err := client.ExecCommand(ctx, spec); err != nil {
+			return explainCommandAccess(err)
+		}
+		if wait.Duration == 0 {
+			if opts.agentMode {
+				return writeJSON(opts.stdout, map[string]any{
+					"ok": true, "unit_id": unit.ID, "unit": unit.Name, "command": name, "queued": true,
+				}, opts.compact)
+			}
+			fmt.Fprintf(opts.stdout, "Command %q queued for unit %s (id=%d).\n", name, unit.Name, unit.ID)
+			fmt.Fprintf(opts.stderr, "Wialon executes commands asynchronously; add --wait 60s, or watch '%s messages tail %d --all-types'.\n", invocationName(opts.agentMode), unit.ID)
+			return nil
+		}
+		if !opts.agentMode {
+			fmt.Fprintf(opts.stderr, "Command %q sent to unit %s (id=%d); waiting up to %s for the result.\n", name, unit.Name, unit.ID, wait.Duration)
+		}
+		result, err := waitForCommandResult(ctx, client, unit.ID, name, wait.Duration, *poll, seen)
+		if err != nil {
+			// The error chain is broken on purpose: a retry would send again.
+			return fmt.Errorf("command %q reached unit %s (id=%d), but waiting for its result failed: %s", name, unit.Name, unit.ID, err)
+		}
+		if result == nil {
+			return fmt.Errorf("command %q reached unit %s (id=%d), but no result message arrived within %s; the device may be offline, check later with '%s messages tail %d --all-types'",
+				name, unit.Name, unit.ID, wait.Duration, invocationName(opts.agentMode), unit.ID)
+		}
+		return printCommandResult(unit, name, result, strings.ToLower(*format), opts.compact, opts.stdout, opts.stdout, opts.tableWidth)
+	})
+}
+
+func commandPhoneFlags(phone string) (int64, error) {
+	switch strings.ToLower(strings.TrimSpace(phone)) {
+	case "", "any":
+		return 0, nil
+	case "primary":
+		return 0x1, nil
+	case "secondary":
+		return 0x2, nil
+	default:
+		return 0, fmt.Errorf("--phone must be any, primary, or secondary, got %q", phone)
+	}
+}
+
+func findUnitCommand(commands []wialon.UnitCommand, name string) (wialon.UnitCommand, bool) {
+	for _, command := range commands {
+		if command.Name == name {
+			return command, true
+		}
+	}
+	for _, command := range commands {
+		if strings.EqualFold(command.Name, name) {
+			return command, true
+		}
+	}
+	return wialon.UnitCommand{}, false
+}
+
+func unknownCommandError(unit wialon.Unit, name string, commands []wialon.UnitCommand) error {
+	names := make([]string, 0, len(commands))
+	for _, command := range commands {
+		names = append(names, strconv.Quote(command.Name))
+	}
+	return fmt.Errorf("unit %s (id=%d) has no command named %q; available commands: %s", unit.Name, unit.ID, name, strings.Join(names, ", "))
+}
+
+// commandMessages returns the latest command messages of a unit as a set of
+// keys, so a reply that arrives later is told apart from earlier ones.
+func commandMessages(ctx context.Context, client *wialon.Client, unitID int64) (map[string]bool, error) {
+	seen := make(map[string]bool)
+	loaded, err := client.LoadLastCommands(ctx, unitID, time.Now().Unix(), commandBatch)
+	if err != nil {
+		if isNoMessages(err) {
+			return seen, nil
+		}
+		return nil, err
+	}
+	for _, message := range loaded.Messages {
+		seen[messageKey(message)] = true
+	}
+	return seen, nil
+}
+
+func waitForCommandResult(ctx context.Context, client *wialon.Client, unitID int64, name string, wait, poll time.Duration, seen map[string]bool) (map[string]any, error) {
+	if seen == nil {
+		seen = make(map[string]bool)
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		pause := poll
+		if remaining := time.Until(deadline); remaining < pause {
+			pause = remaining
+		}
+		if pause > 0 {
+			timer := time.NewTimer(pause)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		loaded, err := client.LoadLastCommands(ctx, unitID, time.Now().Unix(), commandBatch)
+		if err != nil && !isNoMessages(err) {
+			return nil, err
+		}
+		for _, message := range loaded.Messages {
+			key := messageKey(message)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if commandResultMatches(message, name) {
+				return message, nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return nil, nil
+		}
+	}
+}
+
+// commandResultMatches accepts a reply without a command name: some devices
+// answer with the outcome only.
+func commandResultMatches(message map[string]any, name string) bool {
+	sent, ok := message["ca"].(string)
+	return !ok || sent == "" || strings.EqualFold(sent, name)
+}
+
+func messageKey(message map[string]any) string {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Sprint(message)
+	}
+	return string(data)
+}
+
+func isNoMessages(err error) bool {
+	var apiErr *wialon.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == 1001
+}
+
+func printCommandResult(unit wialon.Unit, name string, message map[string]any, format string, compact bool, out, notice io.Writer, tableWidth int) error {
+	switch format {
+	case "json":
+		return writeJSON(out, map[string]any{
+			"ok": true, "unit_id": unit.ID, "unit": unit.Name, "command": name,
+			"queued": true, "result": message,
+		}, compact)
+	case "table":
+		timestamp := ""
+		if seconds := int64Value(message["t"]); seconds != 0 {
+			timestamp = time.Unix(seconds, 0).Local().Format(time.RFC3339)
+		}
+		params := ""
+		if value, ok := message["p"]; ok && value != nil {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			params = string(data)
+		}
+		row := []string{timestamp, textValue(message["ca"]), textValue(message["cn"]), textValue(message["lt"]), textValue(message["ln"]), params}
+		return texttable.WriteAdaptive(out, notice, []texttable.Column{
+			{Header: "TIME", MinWidth: 16},
+			{Header: "COMMAND", MinWidth: 12},
+			{Header: "TYPE", MinWidth: 8, HidePriority: 2, HideIfEmpty: true},
+			{Header: "LINK", MinWidth: 4, HidePriority: 2, HideIfEmpty: true},
+			{Header: "USER", MinWidth: 6, HidePriority: 1, HideIfEmpty: true},
+			{Header: "RESULT", MinWidth: 16},
+		}, [][]string{row}, tableWidth)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func textValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return fmt.Sprint(value)
+}
+
+func explainCommandAccess(err error) error {
+	var apiErr *wialon.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == 7 {
+		return fmt.Errorf("%w; the user needs the Send commands right to this unit and the token needs access flag 0x2000", err)
+	}
+	return err
+}
+
 func selectedUniqueID(uniqueID, imei optionalString) (string, bool, error) {
 	if uniqueID.set && imei.set {
 		return "", false, errors.New("use only one of --unique-id or --imei")

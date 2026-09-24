@@ -27,6 +27,7 @@ func bareCommandHelpPath(args []string) []string {
 	case "profile", "units", "messages", "api",
 		"profile login", "profile add", "profile use", "profile remove",
 		"profile derive", "units get", "units connection", "units create", "units update",
+		"units commands", "units command",
 		"messages get", "messages tail", "messages export", "api call":
 		return args
 	default:
@@ -104,7 +105,7 @@ func printCommandHelp(w io.Writer, path []string, agentMode bool) error {
 }
 
 func printAllHelp(w io.Writer, agentMode bool) error {
-	order := []string{"", "profile", "profile login", "profile derive", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
+	order := []string{"", "profile", "profile login", "profile derive", "profile add", "profile list", "profile use", "profile remove", "profile check", "units", "units list", "units get", "units status", "units device-types", "units connection", "units create", "units update", "units commands", "units command", "messages", "messages get", "messages tail", "messages export", "doctor", "api", "api call", "update"}
 	for i, key := range order {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w, "\n---"); err != nil {
@@ -126,7 +127,7 @@ USAGE
 
 COMMANDS
   profile   Log in and manage saved server profiles
-  units     List units and inspect connection/position status
+  units     List units, inspect connection/position status, send commands
   messages  Export, tail, or download messages
   doctor    Validate the selected profile and API access
   api       Call a Remote API service directly
@@ -292,6 +293,8 @@ SUBCOMMANDS
   connection    Show the settings needed to connect a device
   create        Create a unit and assign its device type and unique ID
   update        Rename a unit or change its device type and/or unique ID
+  commands      List the commands defined for a unit
+  command       Send one command and optionally wait for its result
 
 Run '{cmd} help units SUBCOMMAND' for details.`,
 
@@ -422,6 +425,55 @@ EXAMPLES
   {cmd} units update 1001 --imei 123456789012345
   {cmd} units update 1001 --device-type "Teltonika FMB920"
   {cmd} units update 1001 --device-type 123 --unique-id 123456789012345`,
+
+	"units commands": `{cmd} units commands — list the commands defined for a unit
+
+USAGE
+  {cmd} units commands UNIT [--format table|json]
+
+OPTIONS
+  --format VALUE  table or json (default: table; wlna: json)
+
+Each command is listed with its exact name, type, link type, preset parameters,
+and phone restriction. Use the exact name with '{cmd} units command'.
+
+Reading definitions and sending commands need the 0x2000 token access flag (for
+example --access 7936) and the Send commands right to the unit. A unit with no
+commands and a token without the flag both look like an empty list.
+
+EXAMPLE
+  {cmd} units commands 1001`,
+
+	"units command": `{cmd} units command — send a command to a unit
+
+USAGE
+  {cmd} units command UNIT NAME [--param VALUE] [--wait DURATION] [OPTIONS]
+
+OPTIONS
+  --param VALUE     Parameter passed to the device
+  --json-param      Send --param as a JSON object (flag 0x10)
+  --link-type TYPE  Channel to send through; default is the command's own
+  --phone VALUE     any, primary, or secondary phone for SMS commands
+  --timeout SECONDS Seconds Wialon waits for the device (default: 60)
+  --wait DURATION   Wait for the result message, e.g. 60s
+  --poll DURATION   Poll interval while waiting (default: 2s)
+  --format VALUE    table or json (default: table; wlna: json)
+
+NAME must match a command of the unit; run '{cmd} units commands UNIT' to see
+them. Wialon executes commands asynchronously and the device answers with a
+command message ('ucr'). Without --wait the command is only queued; with --wait
+the unit's command messages are polled until the matching answer arrives, and
+the exit status is non-zero if none does within the given time.
+
+Sending requires the 0x2000 token access flag (for example --access 7936) and
+the Send commands right to the unit. When the token lacks it, wln offers to
+re-authorize the profile in the browser and retries; wlna reports the profile
+login command instead.
+
+EXAMPLES
+  {cmd} units command 1001 "Query position"
+  {cmd} units command 1001 "Block engine" --wait 60s
+  {cmd} units command 1001 "Custom message" --param "setdigout 1" --wait 2m`,
 
 	"messages": `{cmd} messages — retrieve Wialon messages
 

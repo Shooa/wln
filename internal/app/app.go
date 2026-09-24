@@ -710,6 +710,10 @@ func runUnits(ctx context.Context, args []string, opts options) error {
 		return runUnitsCreate(ctx, args[1:], opts)
 	case "update":
 		return runUnitsUpdate(ctx, args[1:], opts)
+	case "commands":
+		return runUnitsCommands(ctx, args[1:], opts)
+	case "command":
+		return runUnitsCommand(ctx, args[1:], opts)
 	default:
 		return commandError(opts, "units", fmt.Sprintf("unknown units subcommand %q", args[0]))
 	}
